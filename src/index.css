@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap');
+
+@import "tailwindcss";
+
+@theme {
+  /* Surface hierarchy - "No-Line" philosophy */
+  --color-surface: #FCF9F8;
+  --color-surface-low: #F6F3F2;
+  --color-surface-lowest: #FFFFFF;
+  --color-surface-high: #EBE7E7;
+  --color-surface-highest: #E0DCDB;
+
+  /* Text */
+  --color-on-background: #1C1B1B;
+  --color-on-surface-variant: #6B6B6B;
+
+  /* Primary - surgical accent */
+  --color-primary: #00288E;
+  --color-primary-container: #1E40AF;
+  --color-on-primary: #FFFFFF;
+
+  /* Typography */
+  --font-display: 'Manrope', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+}
+
+/* No-line philosophy: tonal depth, not borders */
