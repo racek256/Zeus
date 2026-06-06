@@ -116,11 +116,11 @@ def run_simulation(
     failed_hours: list[int] = []
     agent_work_logs: list[AgentWorkLog] = []
     live_view = AgentLogTUI(max_lines=tui_lines) if tui and sys.stdout.isatty() else None
-    total_planned_hours = min(end_hour, start_hour + 24) - start_hour
+    total_planned_hours = end_hour - start_hour
     attempted_hours = 0
 
     try:
-        for hour in range(start_hour, min(end_hour, start_hour + 24)):
+        for hour in range(start_hour, end_hour):
             trace("run_simulation.hour.begin", hour=hour)
             if hour in missing_hours:
                 if verbose and not agent_output_only:
@@ -325,11 +325,11 @@ async def run_simulation_async(
     failed_hours: list[int] = []
     agent_work_logs: list[AgentWorkLog] = []
     live_view = AgentLogTUI(max_lines=tui_lines) if tui and sys.stdout.isatty() else None
-    total_planned_hours = min(end_hour, start_hour + 24) - start_hour
+    total_planned_hours = end_hour - start_hour
     attempted_hours = 0
 
     try:
-        for hour in range(start_hour, min(end_hour, start_hour + 24)):
+        for hour in range(start_hour, end_hour):
             trace("run_simulation_async.hour.begin", hour=hour)
             if hour in missing_hours:
                 if verbose and not agent_output_only:
@@ -550,6 +550,7 @@ def _frontend_hour_result(result: dict[str, Any]) -> dict[str, Any]:
             for v in n1_violations
         ],
         "step_failed": bool(result.get("step_failed")),
+        "evaluation_results": result.get("evaluation_results", []),
     }
 
 

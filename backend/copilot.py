@@ -192,7 +192,7 @@ class CopilotState:
 
 
 _state = CopilotState()
-_API_AGENT_ATTEMPTS = 3
+_API_AGENT_ATTEMPTS = 999999
 
 
 def get_copilot_state() -> CopilotState:
@@ -353,16 +353,21 @@ async def _run_sim_async(
 
             def attempt_progress_callback(hour_result: dict[str, Any]) -> None:
                 attempt_hour_results.append(hour_result)
+                progress_callback(hour_result)
 
             def attempt_phase_callback(event: dict[str, Any]) -> None:
                 updated = dict(event)
                 message = str(updated.get("message", updated.get("phase", "running")))
-                updated["message"] = f"{message} (attempt {attempt}/{_API_AGENT_ATTEMPTS})"
+                updated["message"] = f"{message} (attempt {attempt})"
                 phase_callback(updated)
 
             with _state.lock:
+                run.hours.clear()
+                run.failed_hours.clear()
+                run.n1_failed_hours.clear()
+                run.completed_hours = 0
                 run.phase = "agent_retry" if attempt > 1 else "running"
-                run.phase_detail = f"Running AI agents, attempt {attempt}/{_API_AGENT_ATTEMPTS}"
+                run.phase_detail = f"Running AI agents, attempt {attempt}"
 
             final_result = await _run_simulation_async(
                 dataset_root=DATASET_ROOT,
@@ -382,17 +387,7 @@ async def _run_sim_async(
             if attempt < _API_AGENT_ATTEMPTS:
                 with _state.lock:
                     run.phase = "agent_retry"
-                    run.phase_detail = f"Retrying rejected AI output, attempt {attempt + 1}/{_API_AGENT_ATTEMPTS}"
-
-        raw_results_by_hour = {
-            int(raw_result.get("hour_index", -1)): raw_result
-            for raw_result in (final_result or {}).get("results", [])
-        }
-        for hour_result in final_hour_results:
-            raw_result = raw_results_by_hour.get(int(hour_result.get("hour_index", -1)))
-            if raw_result is not None:
-                hour_result["evaluation_results"] = raw_result.get("evaluation_results", [])
-            progress_callback(hour_result)
+                    run.phase_detail = f"Retrying rejected AI output, attempt {attempt + 1}"
         
         successful = len([h for h in run.hours if not h.step_failed])
         attempted = run.completed_hours or 1

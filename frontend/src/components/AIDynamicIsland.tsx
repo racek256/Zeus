@@ -187,7 +187,7 @@ export function AIDynamicIsland() {
       const nextHour = latestHour ? latestHour.hour_index + 1 : simStatus?.completed_hours ?? 0
       await startSimulation({
         start_hour: nextHour,
-        end_hour: nextHour + 1,
+        end_hour: 8760,
         stop_on_failure: false,
         allow_fallback_physics: false,
         model: 'deepseek-v4-flash',
@@ -239,9 +239,9 @@ export function AIDynamicIsland() {
                   : phase === 'running' && simStatus
                     ? simStatus.completed_hours === 0
                       ? `${simulationPhaseLabel(simStatus.phase)} — ${simStatus.phase_detail ?? 'agents generating...'}`
-                      : `Hour ${simStatus.current_hour}/${simStatus.end_hour} — ${simulationPhaseLabel(simStatus.phase)} (${Math.round(progress)}%)`
+                      : `Simulation survived ${simStatus.completed_hours} hours`
                   : phase === 'completed' && simStatus
-                    ? `${simStatus.completed_hours} hours — ${simStatus.replay_coverage_percent}% coverage`
+                    ? `Survival simulation complete — ${simStatus.completed_hours} hours survived`
                     : display
                       ? `Hour ${display.hour_index}: Gen ${display.observation.total_generation_mw.toFixed(0)} MW · Load ${display.observation.total_load_mw.toFixed(0)} MW`
                       : 'Ready to simulate'}
@@ -263,7 +263,7 @@ export function AIDynamicIsland() {
                 {phase !== 'running' ? (
                   <button onClick={status?.initialised ? handleStartSim : handleInit} className="flex h-9 items-center gap-2 rounded-xl bg-primary px-3 text-xs font-bold text-on-primary transition hover:bg-primary-container focus:outline-none focus:ring-2 focus:ring-primary/20">
                     {phase === 'initialising' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} strokeWidth={2} />}
-                    {status?.initialised ? 'Predict next hour' : 'Init copilot'}
+                    {status?.initialised ? 'Start survival simulation' : 'Init copilot'}
                   </button>
                 ) : (
                   <button onClick={handleStop} className="flex h-9 items-center gap-2 rounded-xl bg-[#FFE8E8] px-3 text-xs font-bold text-[#8A1C1C] transition hover:bg-[#FFD0D0] focus:outline-none focus:ring-2 focus:ring-primary/20">
