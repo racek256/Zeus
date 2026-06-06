@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   AlertTriangle,
   ChevronDown,
@@ -251,8 +252,8 @@ export function AIDynamicIsland() {
 
   return (
     <div className="absolute bottom-6 left-1/2 z-20 -translate-x-1/2">
-      <div className={`overflow-hidden rounded-[1.35rem] bg-surface-lowest/95 text-on-background shadow-[0_24px_56px_rgba(28,27,27,0.16)] backdrop-blur-[20px] transition-all duration-300 ease-out ${expanded ? 'w-[460px] max-h-[80vh]' : 'w-[430px]'}`}>
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex w-full items-center gap-3 bg-surface-low px-4 py-3 text-left transition hover:bg-surface-high focus:outline-none focus:ring-2 focus:ring-primary/20">
+      <div className={`flex flex-col overflow-hidden rounded-[1.35rem] bg-surface-lowest/95 text-on-background shadow-[0_24px_56px_rgba(28,27,27,0.16)] backdrop-blur-[20px] transition-all duration-300 ease-out ${expanded ? 'w-[460px] max-h-[80vh]' : 'w-[430px]'}`}>
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex w-full shrink-0 items-center gap-3 bg-surface-low px-4 py-3 text-left transition hover:bg-surface-high focus:outline-none focus:ring-2 focus:ring-primary/20">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-primary text-on-primary">
             {phase === 'running' ? <Loader2 size={18} strokeWidth={1.9} className="animate-spin" /> : <Sparkles size={18} strokeWidth={1.9} />}
           </div>
@@ -285,8 +286,8 @@ export function AIDynamicIsland() {
         </button>
 
         {expanded && (
-          <div className="bg-surface-low px-4 pb-4">
-            <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+          <div className="flex-1 overflow-y-auto bg-surface-low px-4 pb-4">
+            <div className="space-y-3">
               <div className="flex gap-2">
                 {phase !== 'running' ? (
                   <button onClick={status?.initialised ? handleStartSim : handleInit} className="flex h-9 items-center gap-2 rounded-xl bg-primary px-3 text-xs font-bold text-on-primary transition hover:bg-primary-container focus:outline-none focus:ring-2 focus:ring-primary/20">
@@ -436,72 +437,6 @@ export function AIDynamicIsland() {
                   >
                     Show technical changes
                   </button>
-
-                  {detailsOpen && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-3 backdrop-blur-sm sm:p-4">
-                      <div className="max-h-[90vh] w-full max-w-[min(95vw,42rem)] overflow-hidden rounded-3xl bg-surface-lowest text-on-background shadow-[0_30px_90px_rgba(0,0,0,0.28)]">
-                        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-outline-variant/40 bg-surface-lowest px-4 py-3 sm:px-5 sm:py-4">
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Technical changes</p>
-                            <h3 className="mt-1 font-display text-lg font-extrabold sm:text-xl">Hour {display.hour_index} AI output</h3>
-                          </div>
-                          <button type="button" onClick={() => setDetailsOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-surface-low text-on-surface-variant transition hover:bg-surface-high" aria-label="Close details">
-                            <X size={16} />
-                          </button>
-                        </div>
-                        <div className="max-h-[calc(90vh-72px)] space-y-3 overflow-y-auto p-4 sm:p-5">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="rounded-2xl bg-surface-low p-3">
-                              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Grid totals</p>
-                              <p className="mt-1 text-xs font-medium text-on-background">Generation {display.observation.total_generation_mw.toFixed(2)} MW</p>
-                              <p className="text-xs font-medium text-on-background">Load {display.observation.total_load_mw.toFixed(2)} MW</p>
-                              <p className="text-xs font-medium text-on-background">Imbalance {display.observation.imbalance_mw.toFixed(2)} MW</p>
-                            </div>
-                            <div className="rounded-2xl bg-surface-low p-3">
-                              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Execution</p>
-                              <p className="mt-1 text-xs font-medium text-on-background">Actions proposed: {display.actions_executed}</p>
-                              <p className="text-xs font-medium text-on-background">Accepted actions: {display.actions_accepted}</p>
-                              <p className="text-xs font-medium text-on-background">Status: {display.step_failed ? 'rejected' : 'accepted'}</p>
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl bg-surface-low p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Agent reasoning</p>
-                            <div className="mt-2 space-y-2">
-                              {display.agent_outputs.map((agent) => (
-                                <div key={agent.agent_id} className="rounded-xl bg-surface-lowest px-3 py-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${agentTone(agent.agent_id)}`}>{agentName(agent.agent_id)}</span>
-                                    {agent.has_action && <span className="rounded-full bg-[#E8F4EC] px-1.5 py-0.5 text-[8px] font-bold uppercase text-[#1E6F3A]">Changed grid</span>}
-                                  </div>
-                                  <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">{agent.reasoning}</p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {display.proposals.length > 0 && (
-                            <div className="rounded-2xl bg-surface-low p-3">
-                              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Proposed technical actions</p>
-                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.proposals, null, 2)}</pre>
-                            </div>
-                          )}
-
-                          {display.evaluation_results && display.evaluation_results.length > 0 && (
-                            <div className="rounded-2xl bg-surface-low p-3">
-                              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Validation results</p>
-                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.evaluation_results, null, 2)}</pre>
-                            </div>
-                          )}
-
-                          <div className="rounded-2xl bg-surface-low p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Raw prediction data</p>
-                              <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display, null, 2)}</pre>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -516,6 +451,73 @@ export function AIDynamicIsland() {
           </div>
         )}
       </div>
+
+      {detailsOpen && display && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 p-3 backdrop-blur-sm sm:p-4">
+          <div className="max-h-[90vh] w-full max-w-[min(95vw,42rem)] overflow-hidden rounded-3xl bg-surface-lowest text-on-background shadow-[0_30px_90px_rgba(0,0,0,0.28)]">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-outline-variant/40 bg-surface-lowest px-4 py-3 sm:px-5 sm:py-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Technical changes</p>
+                <h3 className="mt-1 font-display text-lg font-extrabold sm:text-xl">Hour {display.hour_index} AI output</h3>
+              </div>
+              <button type="button" onClick={() => setDetailsOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-surface-low text-on-surface-variant transition hover:bg-surface-high" aria-label="Close details">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="max-h-[calc(90vh-72px)] space-y-3 overflow-y-auto p-4 sm:p-5">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-2xl bg-surface-low p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Grid totals</p>
+                  <p className="mt-1 text-xs font-medium text-on-background">Generation {display.observation.total_generation_mw.toFixed(2)} MW</p>
+                  <p className="text-xs font-medium text-on-background">Load {display.observation.total_load_mw.toFixed(2)} MW</p>
+                  <p className="text-xs font-medium text-on-background">Imbalance {display.observation.imbalance_mw.toFixed(2)} MW</p>
+                </div>
+                <div className="rounded-2xl bg-surface-low p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Execution</p>
+                  <p className="mt-1 text-xs font-medium text-on-background">Actions proposed: {display.actions_executed}</p>
+                  <p className="text-xs font-medium text-on-background">Accepted actions: {display.actions_accepted}</p>
+                  <p className="text-xs font-medium text-on-background">Status: {display.step_failed ? 'rejected' : 'accepted'}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-surface-low p-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Agent reasoning</p>
+                <div className="mt-2 space-y-2">
+                  {display.agent_outputs.map((agent) => (
+                    <div key={agent.agent_id} className="rounded-xl bg-surface-lowest px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${agentTone(agent.agent_id)}`}>{agentName(agent.agent_id)}</span>
+                        {agent.has_action && <span className="rounded-full bg-[#E8F4EC] px-1.5 py-0.5 text-[8px] font-bold uppercase text-[#1E6F3A]">Changed grid</span>}
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">{agent.reasoning}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {display.proposals.length > 0 && (
+                <div className="rounded-2xl bg-surface-low p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Proposed technical actions</p>
+                  <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.proposals, null, 2)}</pre>
+                </div>
+              )}
+
+              {display.evaluation_results && display.evaluation_results.length > 0 && (
+                <div className="rounded-2xl bg-surface-low p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Validation results</p>
+                  <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.evaluation_results, null, 2)}</pre>
+                </div>
+              )}
+
+              <div className="rounded-2xl bg-surface-low p-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Raw prediction data</p>
+                  <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display, null, 2)}</pre>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }
