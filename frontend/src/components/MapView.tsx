@@ -12,6 +12,7 @@ import { CZECH_BOUNDARY, CZECH_LABELS } from '../data/czech-geodata'
 import CZECH_MASK from '../data/czech-mask.json'
 import { getTopology, getSnapshots, getSnapshot } from '../api/grid'
 import type { TopologyData, SnapshotData, GridElementType, GridSelection } from '../types/grid'
+import { loadingColor } from '../utils/loadingColor'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string
 const MAPBOX_TERRAIN_SOURCE_ID = 'mapbox-dem'
@@ -50,12 +51,6 @@ const DEFAULT_NODE_FILTERS: Record<NodeFilterType, boolean> = {
   bus: true,
   generator: true,
   load: true,
-}
-
-function loadingColor(loadingPercent: number): string {
-  if (loadingPercent < 70) return '#22C55E'
-  if (loadingPercent <= 90) return '#EAB308'
-  return '#EF4444'
 }
 
 function scalarProperties(source: Record<string, unknown>): GridSelection['properties'] {

@@ -3,6 +3,7 @@ import { Source, Layer } from 'react-map-gl/mapbox'
 import type { FeatureCollection, Feature, Geometry } from 'geojson'
 import type { TopologyData, SnapshotData, Bus, Branch, Generator, Load } from '../types/grid'
 import type { NodeFilterType } from './NodeTypeFilter'
+import { loadingColor } from '../utils/loadingColor'
 
 interface GridLayerProps {
   topology: TopologyData
@@ -27,12 +28,6 @@ function scalarProperties(source: Record<string, unknown>): Record<string, strin
     }
   }
   return result
-}
-
-function loadingColor(loadingPercent: number): string {
-  if (loadingPercent < 70) return '#22C55E'
-  if (loadingPercent <= 90) return '#EAB308'
-  return '#EF4444'
 }
 
 function busToFeature(bus: Bus, voltage?: number, pMw?: number, hoveredKey?: string | null, selectedKey?: string | null): Feature<Geometry> {

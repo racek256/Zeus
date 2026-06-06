@@ -20,16 +20,30 @@ function PlotFigure({ data, layout, config }: PlotFigureProps) {
     if (!nodeRef.current) return
 
     const node = nodeRef.current
+    let cancelled = false
     void Plotly.react(node, data, layout, {
       displayModeBar: false,
       scrollZoom: false,
       doubleClick: false,
       responsive: true,
       ...config,
+    }).then(() => {
+      if (!cancelled) Plotly.Plots.resize(node)
     })
 
-    return () => Plotly.purge(node)
+    return () => { cancelled = true }
   }, [data, layout, config])
+
+  useEffect(() => {
+    const node = nodeRef.current
+    if (!node) return
+    const observer = new ResizeObserver(() => Plotly.Plots.resize(node))
+    observer.observe(node)
+    return () => {
+      observer.disconnect()
+      Plotly.purge(node)
+    }
+  }, [])
 
   return <div ref={nodeRef} className="h-full w-full" />
 }
@@ -93,6 +107,10 @@ function safetyStateDescription(state: string): string {
   }
 }
 
+function numberSeries(values: number[]): number[] {
+  return values.map((value) => Number(value))
+}
+
 export function Analytics() {
   const [overview, setOverview] = useState<OverviewData | null>(null)
   const [timeseries, setTimeseries] = useState<TimeseriesData | null>(null)
@@ -152,16 +170,16 @@ export function Analytics() {
   const nextHours = Array.from({ length: hours.length }, (_, i) => `+${i + 1}h`)
   const chartHours = [...hours, ...nextHours]
 
-  const loadActual = timeseries.load_actual
-  const generationActual = timeseries.generation_actual
-  const balanceActual = timeseries.balance_actual
+  const loadActual = numberSeries(timeseries.load_actual)
+  const generationActual = numberSeries(timeseries.generation_actual)
+  const balanceActual = numberSeries(timeseries.balance_actual)
   const emptyPredictionWindow = Array.from<null>({ length: nextHours.length }).fill(null)
   const loadChart = [...loadActual, ...emptyPredictionWindow]
 
-  const currentLoad = overview.consumption_now
-  const currentGeneration = overview.production_now
-  const currentImbalance = overview.net_imbalance
-  const currentRatio = overview.prod_cons_ratio.toFixed(2)
+  const currentLoad = Number(overview.consumption_now)
+  const currentGeneration = Number(overview.production_now)
+  const currentImbalance = Number(overview.net_imbalance)
+  const currentRatio = Number(overview.prod_cons_ratio).toFixed(2)
   const safetyState = overview.safety_state
 
   const cards = [
@@ -174,13 +192,13 @@ export function Analytics() {
 
   const safetyWatchlist = [...timeseries.safety_watchlist].sort((a, b) => b.max_loading - a.max_loading)
   const corridors = safetyWatchlist.map((s) => s.corridor).reverse()
-  const lineLoading = safetyWatchlist.map((s) => s.max_loading).reverse()
+  const lineLoading = safetyWatchlist.map((s) => Number(s.max_loading)).reverse()
   const lineColors = lineLoading.map(loadingColor)
   const safetyAxisMax = Math.max(20, Math.ceil((Math.max(...lineLoading, 0) * 1.35) / 5) * 5)
 
   const reserveTypes = timeseries.reserve_types
-  const reserveUsed = timeseries.reserve_used
-  const reserveAvailable = timeseries.reserve_available
+  const reserveUsed = numberSeries(timeseries.reserve_used)
+  const reserveAvailable = numberSeries(timeseries.reserve_available)
   const reserveAxisMax = Math.max(100, Math.ceil((Math.max(...reserveAvailable, ...reserveUsed, 0) * 1.15) / 500) * 500)
 
   const alarmQueue = [
@@ -247,6 +265,7 @@ export function Analytics() {
                 margin: { t: 12, r: 18, b: 40, l: 58 },
                 xaxis: {
                   ...baseLayout.xaxis,
+                  type: 'category',
                   categoryorder: 'array',
                   categoryarray: chartHours,
                   range: [-0.5, chartHours.length - 0.5],
@@ -258,7 +277,7 @@ export function Analytics() {
                   spikethickness: 1,
                   spikedash: 'dot',
                 },
-                yaxis: { ...baseLayout.yaxis, title: { text: 'MW' }, showspikes: false },
+                yaxis: { ...baseLayout.yaxis, type: 'linear', title: { text: 'MW' }, showspikes: false },
                 shapes: [
                   { type: 'rect', xref: 'paper', yref: 'paper', x0: 0.5, x1: 1, y0: 0, y1: 1, fillcolor: primary, opacity: 0.05, line: { width: 0 } },
                   { type: 'line', xref: 'paper', yref: 'paper', x0: 0.5, x1: 0.5, y0: 0, y1: 1, line: { color: muted, width: 1, dash: 'dash' } },
@@ -303,8 +322,8 @@ export function Analytics() {
                   bordercolor: surfaceHigh,
                   font: { family: 'Inter, system-ui, sans-serif', size: 12, color: text },
                 },
-                xaxis: { ...baseLayout.xaxis, range: [0, safetyAxisMax], ticksuffix: '%' },
-                yaxis: baseLayout.yaxis,
+                xaxis: { ...baseLayout.xaxis, type: 'linear', range: [0, safetyAxisMax], ticksuffix: '%' },
+                yaxis: { ...baseLayout.yaxis, type: 'category' },
                 shapes: safetyAxisMax >= 70 ? [
                   { type: 'line', yref: 'paper', y0: 0, y1: 1, x0: 70, x1: 70, line: { color: alert, width: 1, dash: 'dot' } },
                   { type: 'line', yref: 'paper', y0: 0, y1: 1, x0: 95, x1: 95, line: { color: critical, width: 2, dash: 'dot' } },
@@ -331,6 +350,7 @@ export function Analytics() {
                 margin: { t: 12, r: 18, b: 40, l: 58 },
                 xaxis: {
                   ...baseLayout.xaxis,
+                  type: 'category',
                   categoryorder: 'array',
                   categoryarray: hours,
                   showspikes: true,
@@ -341,7 +361,7 @@ export function Analytics() {
                   spikethickness: 1,
                   spikedash: 'dot',
                 },
-                yaxis: { ...baseLayout.yaxis, title: { text: 'MW' }, showspikes: false },
+                yaxis: { ...baseLayout.yaxis, type: 'linear', title: { text: 'MW' }, showspikes: false },
                 legend: { orientation: 'h', y: -0.18, x: 0.5, xanchor: 'center', font: { size: 11, color: muted } },
               }}
             />
@@ -376,7 +396,7 @@ export function Analytics() {
                 barmode: 'group',
                 hovermode: 'x unified',
                 margin: { t: 6, r: 12, b: 42, l: 68 },
-                yaxis: { ...baseLayout.yaxis, range: [0, reserveAxisMax], ticksuffix: ' MW', title: { text: 'reserve capacity' } },
+                yaxis: { ...baseLayout.yaxis, type: 'linear', range: [0, reserveAxisMax], ticksuffix: ' MW', title: { text: 'reserve capacity' } },
                 legend: { orientation: 'h', y: -0.28, x: 0.5, xanchor: 'center', font: { size: 11, color: muted } },
               }}
             />
@@ -409,6 +429,7 @@ export function Analytics() {
                 margin: { t: 12, r: 18, b: 40, l: 58 },
                 xaxis: {
                   ...baseLayout.xaxis,
+                  type: 'category',
                   categoryorder: 'array',
                   categoryarray: hours,
                   showspikes: true,
@@ -419,7 +440,7 @@ export function Analytics() {
                   spikethickness: 1,
                   spikedash: 'dot',
                 },
-                yaxis: { ...baseLayout.yaxis, title: { text: 'MW' }, zeroline: true, zerolinecolor: muted },
+                yaxis: { ...baseLayout.yaxis, type: 'linear', title: { text: 'MW' }, zeroline: true, zerolinecolor: muted },
                 shapes: [
                   { type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: -320, y1: -120, fillcolor: alert, opacity: 0.08, line: { width: 0 } },
                   { type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: -800, y1: -320, fillcolor: critical, opacity: 0.08, line: { width: 0 } },

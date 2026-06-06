@@ -23,19 +23,8 @@ export function MapStyleSwitcher({
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="absolute bottom-6 right-6 z-10 flex items-end gap-2">
-      <button
-        onClick={() => onViewModeChange(!is3d)}
-        className={`h-12 min-w-12 rounded-xl px-3 backdrop-blur-sm flex items-center justify-center shadow-lg transition-colors text-[11px] font-semibold tracking-[0.14em] ${
-          is3d
-            ? 'bg-on-background text-white'
-            : 'bg-on-background/78 text-white/55 hover:text-white hover:bg-on-background/90'
-        }`}
-        title={is3d ? 'Switch to 2D view' : 'Switch to 3D view'}
-      >
-        {is3d ? '3D' : '2D'}
-      </button>
-
+    <div className="absolute bottom-6 right-6 z-90 flex items-end gap-2">
+      
       <button
         onClick={() => setOpen(!open)}
         className="w-12 h-12 rounded-xl bg-on-background/90 backdrop-blur-sm text-white/70 hover:text-white flex items-center justify-center shadow-lg transition-colors"

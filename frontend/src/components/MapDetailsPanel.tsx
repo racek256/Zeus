@@ -1,33 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, X } from 'lucide-react'
 import type { GridElementType, GridSelection } from '../types/grid'
-
-function rampColor(value: number, stops: Array<{ pct: number; r: number; g: number; b: number }>): string {
-  let lower = stops[0]
-  let upper = stops[stops.length - 1]
-  for (let i = 0; i < stops.length - 1; i++) {
-    if (value >= stops[i].pct && value <= stops[i + 1].pct) {
-      lower = stops[i]
-      upper = stops[i + 1]
-      break
-    }
-  }
-  if (lower.pct === upper.pct) return `rgb(${lower.r},${lower.g},${lower.b})`
-  const t = (value - lower.pct) / (upper.pct - lower.pct)
-  const r = Math.round(lower.r + (upper.r - lower.r) * t)
-  const g = Math.round(lower.g + (upper.g - lower.g) * t)
-  const b = Math.round(lower.b + (upper.b - lower.b) * t)
-  return `rgb(${r},${g},${b})`
-}
-
-function loadingColor(loadingPercent: number): string {
-  return rampColor(loadingPercent, [
-    { pct: 0, r: 34, g: 197, b: 94 },   // #22C55E green
-    { pct: 50, r: 234, g: 179, b: 8 }, // #EAB308 yellow
-    { pct: 85, r: 239, g: 68, b: 68 },  // #EF4444 red
-    { pct: 100, r: 153, g: 27, b: 27 }, // #991B1B dark red
-  ])
-}
+import { loadingColor } from '../utils/loadingColor'
 
 type ActiveFilter = Extract<GridElementType, 'bus' | 'generator' | 'load' | 'branch'>
 

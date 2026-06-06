@@ -42,7 +42,7 @@ export function AIDynamicIsland() {
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="truncate text-[11px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Grid Copilot</p>
+              <p className="truncate text-[11px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Athena</p>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] ${phaseTone(active.phase)}`}>{active.label}</span>
             </div>
             <p className="mt-1 truncate text-sm font-semibold text-on-background">{active.detail}</p>
