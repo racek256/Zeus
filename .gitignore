@@ -12,6 +12,15 @@ dist
 dist-ssr
 *.local
 .env
+AI/.env
+AI/main_prompt.md
+
+# AthenaAI specific
+AI/AthenaAI/.env
+AI/AthenaAI/.venv
+AI/AthenaAI/**/__pycache__
+AI/AthenaAI/**/*.egg-info
+AI/AthenaAI/**/*.egg
 
 # Editor directories and files
 .vscode/*
