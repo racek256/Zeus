@@ -438,18 +438,18 @@ export function AIDynamicIsland() {
                   </button>
 
                   {detailsOpen && (
-                    <div className="fixed inset-0 z-50 grid place-items-center bg-black/35 p-4 backdrop-blur-sm">
-                      <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-surface-lowest text-on-background shadow-[0_30px_90px_rgba(0,0,0,0.28)]">
-                        <div className="flex items-start justify-between gap-3 border-b border-outline-variant/40 px-5 py-4">
-                          <div>
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-3 backdrop-blur-sm sm:p-4">
+                      <div className="max-h-[90vh] w-full max-w-[min(95vw,42rem)] overflow-hidden rounded-3xl bg-surface-lowest text-on-background shadow-[0_30px_90px_rgba(0,0,0,0.28)]">
+                        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-outline-variant/40 bg-surface-lowest px-4 py-3 sm:px-5 sm:py-4">
+                          <div className="min-w-0">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Technical changes</p>
-                            <h3 className="mt-1 font-display text-xl font-extrabold">Hour {display.hour_index} AI output</h3>
+                            <h3 className="mt-1 font-display text-lg font-extrabold sm:text-xl">Hour {display.hour_index} AI output</h3>
                           </div>
                           <button type="button" onClick={() => setDetailsOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-surface-low text-on-surface-variant transition hover:bg-surface-high" aria-label="Close details">
                             <X size={16} />
                           </button>
                         </div>
-                        <div className="max-h-[calc(82vh-80px)] space-y-3 overflow-y-auto p-5">
+                        <div className="max-h-[calc(90vh-72px)] space-y-3 overflow-y-auto p-4 sm:p-5">
                           <div className="grid grid-cols-2 gap-2">
                             <div className="rounded-2xl bg-surface-low p-3">
                               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Grid totals</p>
@@ -483,20 +483,20 @@ export function AIDynamicIsland() {
                           {display.proposals.length > 0 && (
                             <div className="rounded-2xl bg-surface-low p-3">
                               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Proposed technical actions</p>
-                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white">{JSON.stringify(display.proposals, null, 2)}</pre>
+                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.proposals, null, 2)}</pre>
                             </div>
                           )}
 
                           {display.evaluation_results && display.evaluation_results.length > 0 && (
                             <div className="rounded-2xl bg-surface-low p-3">
                               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Validation results</p>
-                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white">{JSON.stringify(display.evaluation_results, null, 2)}</pre>
+                              <pre className="mt-2 max-h-56 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display.evaluation_results, null, 2)}</pre>
                             </div>
                           )}
 
                           <div className="rounded-2xl bg-surface-low p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">Raw prediction data</p>
-                            <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white">{JSON.stringify(display, null, 2)}</pre>
+                              <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-[#111] p-3 text-[11px] leading-relaxed text-white whitespace-pre-wrap break-all">{JSON.stringify(display, null, 2)}</pre>
                           </div>
                         </div>
                       </div>
