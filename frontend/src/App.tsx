@@ -4,11 +4,12 @@ import { Navbar } from './components/Navbar'
 import { MapView } from './components/MapView'
 import { Analytics } from './pages/Analytics'
 import { Settings } from './pages/Settings'
+import { useSettings } from './hooks/useSettings'
 
 export type Page = 'topology' | 'analytics' | 'settings'
 
 function App() {
-  const [mapStyle, setMapStyle] = useState('streets-v12')
+  const { settings, updateSetting } = useSettings()
   const [activePage, setActivePage] = useState<Page>('topology')
 
   return (
@@ -21,14 +22,13 @@ function App() {
             aria-hidden={activePage !== 'topology'}
             className={activePage === 'topology' ? 'absolute inset-0 z-10' : 'absolute inset-0 pointer-events-none opacity-0'}
           >
-            <MapView mapStyle={mapStyle} onStyleChange={setMapStyle} />
+            <MapView mapStyle={settings.mapStyle} onStyleChange={(style) => updateSetting('mapStyle', style)} />
           </div>
-          <div
-            aria-hidden={activePage !== 'analytics'}
-            className={activePage === 'analytics' ? 'absolute inset-0 z-10' : 'absolute inset-0 pointer-events-none opacity-0'}
-          >
-            <Analytics />
-          </div>
+          {activePage === 'analytics' && (
+            <div className="absolute inset-0 z-10">
+              <Analytics />
+            </div>
+          )}
           <div
             aria-hidden={activePage !== 'settings'}
             className={activePage === 'settings' ? 'absolute inset-0 z-10' : 'absolute inset-0 pointer-events-none opacity-0'}

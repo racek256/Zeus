@@ -1,6 +1,6 @@
 export function Navbar() {
   return (
-    <header className="h-14 flex items-center justify-between px-6 shrink-0">
+    <header className="h-14 flex items-center justify-between px-6 shrink-0 border-on-background border-b border-bottom">
       {/* Title */}
       <div className="flex items-baseline gap-3">
         <h1 className="font-display text-lg font-bold tracking-tight text-on-background">

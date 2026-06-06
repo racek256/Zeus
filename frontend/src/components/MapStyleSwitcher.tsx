@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Map as MapIcon, Satellite, Moon, Globe, Type } from 'lucide-react'
+import { Map as MapIcon, Satellite, Moon, Globe } from 'lucide-react'
 
 const styles = [
   { id: 'streets-v12', label: 'Streets', icon: Globe },
@@ -10,29 +10,20 @@ const styles = [
 interface MapStyleSwitcherProps {
   currentStyle: string
   onChange: (style: string) => void
-  labelsEnabled: boolean
-  onLabelsChange: (enabled: boolean) => void
   is3d: boolean
   onViewModeChange: (enabled: boolean) => void
 }
 
-export function MapStyleSwitcher({ currentStyle, onChange, labelsEnabled, onLabelsChange, is3d, onViewModeChange }: MapStyleSwitcherProps) {
+export function MapStyleSwitcher({
+  currentStyle,
+  onChange,
+  is3d,
+  onViewModeChange,
+}: MapStyleSwitcherProps) {
   const [open, setOpen] = useState(false)
 
   return (
     <div className="absolute bottom-6 right-6 z-10 flex items-end gap-2">
-      <button
-        onClick={() => onLabelsChange(!labelsEnabled)}
-        className={`h-12 min-w-12 rounded-xl px-3 backdrop-blur-sm flex items-center justify-center shadow-lg transition-colors ${
-          labelsEnabled
-            ? 'bg-on-background text-white'
-            : 'bg-on-background/78 text-white/55 hover:text-white hover:bg-on-background/90'
-        }`}
-        title={labelsEnabled ? 'Hide Czech labels' : 'Show Czech labels'}
-      >
-        <Type size={19} strokeWidth={1.8} />
-      </button>
-
       <button
         onClick={() => onViewModeChange(!is3d)}
         className={`h-12 min-w-12 rounded-xl px-3 backdrop-blur-sm flex items-center justify-center shadow-lg transition-colors text-[11px] font-semibold tracking-[0.14em] ${

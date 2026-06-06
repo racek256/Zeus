@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 .env
+.omo/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
 # Editor directories and files
 .vscode/*
@@ -26,6 +31,7 @@ dist-ssr
 
 # Dataset (proprietary)
 dataset/
+dataset-backup/
 *.zip
 frontend/src/data/grid-buses.json
 frontend/src/data/grid-branches.json

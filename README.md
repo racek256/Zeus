@@ -1,5 +1,9 @@
 # React + TypeScript + Vite
 
+## Asset credits
+
+- Generator 3D model: [Generator - The Mystery of Stalore-9](https://sketchfab.com/3d-models/generator-the-mystery-of-stalore-9-9c2e859d7a8146dcadf9014c3885fa9c) by [Revilo / @Revillo_](https://sketchfab.com/Revillo_), licensed under [Creative Commons Attribution-NonCommercial 4.0](http://creativecommons.org/licenses/by-nc/4.0/). Converted from FBX to optimized GLB for this project.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
