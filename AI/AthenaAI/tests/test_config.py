@@ -161,7 +161,7 @@ class TestSecretsNonExposure:
         ]
 
         tracked_extensions = {'.py', '.jsonc', '.json', '.yaml', '.yml', '.toml', '.txt'}
-        exclude_dirs = {'__pycache__', '.git', 'node_modules', '.pytest_cache'}
+        exclude_dirs = {'__pycache__', '.git', 'node_modules', '.pytest_cache', '.venv', 'venv'}
 
         violations = []
         for py_file in athenaai_root.rglob('*'):

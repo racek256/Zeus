@@ -56,8 +56,8 @@ class TestRedispatchCosts:
     def test_redispatch_upward_only(self):
         upward = [{"generator_id": "G1", "mw": 50.0, "marginal_cost": 60.0}]
         result = calculate_redispatch_costs(upward, [], {}, datetime.now())
-        assert result.upward_cost_eur == 3000.0
-        assert result.total_cost_eur == 3000.0
+        assert result.upward_cost_eur == 4000.0
+        assert result.total_cost_eur == 4000.0
 
 
 class TestBalancingGroup:

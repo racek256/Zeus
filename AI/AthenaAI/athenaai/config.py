@@ -24,7 +24,7 @@ load_dotenv()
 # Centralized model identifier for all agents.
 # Use this constant in agent configs to ensure consistency.
 # Provider slug is intentionally abstracted to allow easy provider switching.
-KIMI_K2_6_MODEL: Final[str] = "deepseek-v4-flash"
+KIMI_K2_6_MODEL: Final[str] = "deepseek-v4-pro"
 
 # OpenCode Go configuration
 # The API key is consumed from this env var by opencode Go binary.
@@ -106,6 +106,24 @@ ALL_AGENTS: list[str] = [AGENT_COORDINATOR] + REGIONAL_AGENTS + [AGENT_ORACLE]
 
 
 # =============================================================================
+# MCP Forecast Server Configuration
+# =============================================================================
+
+# MCP server identifier for TimesFM forecast tools.
+# Registered in opencode.jsonc under mcp.athenaai-forecast.
+MCP_FORECAST_SERVER_ID: Final[str] = "athenaai-forecast"
+
+# MCP forecast tools exposed by the TimesFM forecast MCP server.
+# These are probabilistic ML forecasts (predictions with uncertainty).
+# Contrast with the deterministic tools in physics.py which are
+# statistical fallbacks for when MCP is unavailable.
+MCP_FORECAST_TOOLS: list[str] = [
+    "forecast_load",
+    "forecast_wind",
+    "forecast_solar",
+]
+
+# =============================================================================
 # Simulation Configuration
 # =============================================================================
 
@@ -114,7 +132,12 @@ DEFAULT_SIMULATION_STEP_MINUTES: Final[int] = 15
 DEFAULT_DAY_AHEAD_HOURS: Final[int] = 24
 
 # Dataset paths (relative to AthenaAI root)
-DATASET_ROOT: Path = Path("/home/racek/grid/dataset/greenhack-2026-ČEPS-dataset")
+DATASET_ROOT: Path = Path(
+    os.environ.get(
+        "ATHENAAI_DATASET_ROOT",
+        str(ATHENAAI_ROOT.parent.parent / "dataset" / "greenhack-2026-ČEPS-dataset"),
+    )
+)
 DATASET_STATIC: Path = DATASET_ROOT / "data" / "static"
 DATASET_SNAPSHOTS: Path = DATASET_ROOT / "data" / "snapshots"
 DATASET_REALTIME: Path = DATASET_ROOT / "data" / "realtime"

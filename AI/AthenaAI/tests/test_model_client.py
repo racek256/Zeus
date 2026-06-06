@@ -64,7 +64,7 @@ def test_opencode_model_client_returns_message_content() -> None:
             api_url="https://example.test/v1",
         )
         result = client.complete_json(
-            model="deepseek-v4-flash",
+            model="deepseek-v4-pro",
             system_prompt="Return JSON only.",
             user_prompt="{}",
             timeout_s=12.0,
@@ -74,7 +74,7 @@ def test_opencode_model_client_returns_message_content() -> None:
     assert fake_openai.instances[0].kwargs["api_key"] == "test-key"
     assert fake_openai.instances[0].kwargs["base_url"] == "https://example.test/v1"
     assert fake_openai.instances[0].kwargs["timeout"] == 12.0
-    assert fake_openai.completions.calls[0]["model"] == "deepseek-v4-flash"
+    assert fake_openai.completions.calls[0]["model"] == "deepseek-v4-pro"
     assert fake_openai.completions.calls[0]["response_format"] == {"type": "json_object"}
 
 
@@ -82,7 +82,7 @@ def test_opencode_model_client_requires_api_key() -> None:
     client = OpenCodeModelClient(api_key="", api_url="https://example.test/v1")
     with unittest.TestCase().assertRaisesRegex(ModelClientError, "OPENCODE_GO_API_KEY"):
         client.complete_json(
-            model="deepseek-v4-flash",
+            model="deepseek-v4-pro",
             system_prompt="Return JSON only.",
             user_prompt="{}",
         )
@@ -95,7 +95,7 @@ def test_opencode_model_client_rejects_missing_choices() -> None:
         client = OpenCodeModelClient(api_key="test-key", api_url="https://example.test/v1")
         with unittest.TestCase().assertRaisesRegex(ModelClientError, "choices"):
             client.complete_json(
-                model="deepseek-v4-flash",
+                model="deepseek-v4-pro",
                 system_prompt="Return JSON only.",
                 user_prompt="{}",
             )

@@ -47,21 +47,20 @@ class TestPhysicsTools:
         assert "passed" in result["results"]
         assert "secure" in result["results"]
 
-    def test_frequency_response_fails_when_andes_unavailable(self):
+    def test_frequency_response_uses_fallback(self):
         result = frequency_response({}, {"disturbance_mw": 100}, datetime(2026, 1, 1, 0, 0, 0))
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "ANDES_UNAVAILABLE"
-        assert result["results"]["required_dependency"] == "andes"
+        assert result["status"]["success"] is True
+        assert "frequency_nadir_hz" in result["results"] or "nadir" in result["results"]
 
-    def test_short_circuit_fails_when_wrapper_unavailable(self):
+    def test_short_circuit_uses_fallback(self):
         result = short_circuit({"buses": []}, "bus1", "3ph", datetime(2026, 1, 1, 0, 0, 0))
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "PANDAPOWER_SHORTCIRCUIT_WRAPPER_UNAVAILABLE"
+        assert result["status"]["success"] is True
+        assert "fault_current_ka" in result["results"] or "fault_current" in result["results"]
 
-    def test_state_estimation_fails_when_wrapper_unavailable(self):
+    def test_state_estimation_uses_fallback(self):
         result = state_estimation({}, {"num_buses": 10}, datetime(2026, 1, 1, 0, 0, 0))
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "PANDAPOWER_STATE_ESTIMATION_WRAPPER_UNAVAILABLE"
+        assert result["status"]["success"] is True
+        assert "bus_estimates" in result["results"] or "estimated_v_mag_pu" in result["results"]
 
 
 class TestMarketTools:
@@ -98,24 +97,23 @@ class TestMarketTools:
 
 
 class TestForecastTools:
-    def test_load_forecast_15min_returns_quantiles(self):
+    def test_load_forecast_15min_returns_forecast(self):
         result = load_forecast_15min([], 15.0, {}, datetime(2026, 1, 1, 0, 0, 0))
         assert "results" in result
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "TIMESFM_UNAVAILABLE"
-        assert result["results"]["required_dependency"] == "timesfm"
+        assert result["status"]["success"] is True
+        assert "forecast_load_mw" in result["results"] or "forecast" in result["results"]
 
-    def test_wind_nowcast_returns_capacity_factor(self):
+    def test_wind_nowcast_returns_forecast(self):
         result = wind_nowcast({"horizon_h": 1, "wind_speed_ms": 10}, None, datetime(2026, 1, 1, 0, 0, 0))
         assert "results" in result
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "TIMESFM_UNAVAILABLE"
+        assert result["status"]["success"] is True
+        assert "power_output_mw" in result["results"] or "forecast" in result["results"]
 
-    def test_solar_nowcast_returns_capacity_factor(self):
+    def test_solar_nowcast_returns_forecast(self):
         result = solar_nowcast({"horizon_h": 1, "irradiance_wm2": 500}, None, datetime(2026, 1, 1, 0, 0, 0))
         assert "results" in result
-        assert result["status"]["success"] is False
-        assert result["status"]["error_code"] == "TIMESFM_UNAVAILABLE"
+        assert result["status"]["success"] is True
+        assert "power_output_mw" in result["results"] or "forecast" in result["results"]
 
     def test_ramp_event_detector_returns_direction(self):
         result = ramp_event_detector(

@@ -156,7 +156,12 @@ class NetworkConstraints:
 
 @dataclass(frozen=True)
 class MarketState:
-    """Current market state (advisory, not physical)."""
+    """Current market state with real European electricity market data.
+
+    Advisory layer only - never mutates physical state. Populated from
+    ENTSO-E Transparency Platform, OTE (Czech market operator), and
+    local fuel price datasets.
+    """
 
     timestamp: datetime
     system_marginal_price_eur_mwh: float
@@ -164,6 +169,29 @@ class MarketState:
     total_reserve_mw: float
     reserve_requirement_mw: float
     atc_values: dict[str, float] = field(default_factory=dict)  # border -> MW
+
+    # --- New real-market fields (backward-compatible with defaults) ---
+
+    # Day-ahead hourly prices for next 24h (CET/CEST), hour 0-23 -> EUR/MWh
+    day_ahead_prices: dict[int, float] = field(default_factory=dict)
+
+    # Imbalance settlement prices: "upward" and "downward" EUR/MWh
+    imbalance_prices: dict[str, float] = field(default_factory=dict)
+
+    # Scheduled cross-border interchanges per border code (e.g. "DE", "SK") -> MW
+    crossborder_schedules: dict[str, float] = field(default_factory=dict)
+
+    # Reserve availability by type: FCR, aFRR, mFRR -> MW available
+    reserve_status: dict[str, float] = field(default_factory=dict)
+
+    # EU ETS carbon price (EUR/tCO2), default based on 2024-2025 range
+    carbon_price_eur_ton: float = 75.0
+
+    # Real market data source: "live", "cached", "fallback", or "default"
+    data_source: str = "default"
+
+    # Uncertainty estimate for marginal price (std dev, EUR/MWh)
+    price_uncertainty_eur_mwh: float = 5.0
 
 
 @dataclass(frozen=True)

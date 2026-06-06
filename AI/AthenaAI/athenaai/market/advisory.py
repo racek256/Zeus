@@ -2,26 +2,41 @@
 
 All functions are pure/deterministic. They return recommendations/costs
 but never mutate physics state. Coordinator must validate through physics tools.
+
+When real market data (from ENTSO-E/OTE) is available, functions use live
+day-ahead prices, imbalance prices, and real fuel-based cost curves.
+Otherwise fall back to hardcoded defaults.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 _FUEL_PRIORITY: dict[str, int] = {
     "lignite": 0,
     "coal": 0,
     "steam_coal": 0,
+    "brown_coal": 0,
     "uranium": 1,
     "nuclear": 1,
     "biomass": 2,
+    "hydro": 2,
     "natural_gas": 3,
     "gas": 3,
+    "ccgt": 3,
     "oil": 4,
+    "wind": 5,
+    "solar": 5,
 }
+
+_DEFAULT_MARGINAL_PRICE: float = 80.0
+_DEFAULT_IMBALANCE_PRICE: float = 85.0
 
 
 @dataclass(frozen=True)
@@ -84,11 +99,19 @@ class ImbalancePricingResult:
 
 
 def _estimate_marginal_cost(
-    generator: dict[str, Any], fuel_prices: dict[str, float]
+    generator: dict[str, Any],
+    fuel_prices: dict[str, float],
+    cost_calculator: Any | None = None,
 ) -> float:
+    if cost_calculator is not None:
+        try:
+            gen_cost = cost_calculator.calculate_for_generator(generator)
+            return gen_cost.marginal_cost_eur_mwh
+        except Exception:
+            logger.debug("CostCurveCalculator failed, using legacy estimate")
     fuel_type = generator.get("fuel_type", "unknown")
     efficiency = generator.get("efficiency_percent", 40.0) / 100.0
-    fuel_price = fuel_prices.get(fuel_type, 50.0)
+    fuel_price = fuel_prices.get(fuel_type, _DEFAULT_MARGINAL_PRICE)
     if efficiency <= 0:
         efficiency = 0.4
     return fuel_price / efficiency
@@ -99,6 +122,7 @@ def merit_order_dispatch(
     load_forecast_mw: float,
     fuel_prices: dict[str, Any],
     simulated_time: datetime | None = None,
+    cost_calculator: Any | None = None,
 ) -> MeritOrderResult:
     fuel_price_map: dict[str, float] = {
         k: float(v) for k, v in fuel_prices.items()
@@ -108,7 +132,7 @@ def merit_order_dispatch(
     for g in generator_data:
         gid = g.get("generator_id", g.get("name", "unknown"))
         capacity = g.get("capacity_mw", g.get("max_p_mw", 100.0))
-        marginal_cost = _estimate_marginal_cost(g, fuel_price_map)
+        marginal_cost = _estimate_marginal_cost(g, fuel_price_map, cost_calculator)
         fuel_type = str(g.get("fuel_type", "unknown"))
         priority = _FUEL_PRIORITY.get(fuel_type, 99)
         units_with_cost.append((gid, marginal_cost, capacity, priority))
@@ -149,18 +173,27 @@ def calculate_redispatch_costs(
     downward_adjustments: list[dict[str, Any]],
     fuel_prices: dict[str, Any],
     simulated_time: datetime | None = None,
+    day_ahead_prices: dict[int, float] | None = None,
+    current_hour: int = 0,
 ) -> RedispatchCostResult:
     fuel_price_map: dict[str, float] = {
         k: float(v) for k, v in fuel_prices.items()
     }
+
+    spot_price = _DEFAULT_MARGINAL_PRICE
+    if day_ahead_prices:
+        spot_price = day_ahead_prices.get(
+            current_hour,
+            sum(day_ahead_prices.values()) / max(len(day_ahead_prices), 1),
+        )
 
     upward_cost = 0.0
     upward_volumes: list[tuple[str, float]] = []
     for adj in upward_adjustments:
         gid = adj.get("generator_id", "unknown")
         mw = adj.get("mw", 0.0)
-        marginal_cost = adj.get("marginal_cost", 50.0)
-        upward_cost += mw * marginal_cost
+        marginal_cost = adj.get("marginal_cost", spot_price)
+        upward_cost += mw * max(marginal_cost, spot_price)
         upward_volumes.append((gid, mw))
 
     downward_cost = 0.0
@@ -168,8 +201,8 @@ def calculate_redispatch_costs(
     for adj in downward_adjustments:
         gid = adj.get("generator_id", "unknown")
         mw = adj.get("mw", 0.0)
-        marginal_cost = adj.get("marginal_cost", 50.0)
-        downward_cost += mw * marginal_cost
+        marginal_cost = adj.get("marginal_cost", spot_price)
+        downward_cost += mw * min(marginal_cost, spot_price)
         downward_volumes.append((gid, mw))
 
     return RedispatchCostResult(
@@ -188,6 +221,7 @@ def calculate_balancing_group(
     actual_generation: dict[str, float],
     settlement_interval: str,
     simulated_time: datetime | None = None,
+    imbalance_prices: dict[str, float] | None = None,
 ) -> BalancingGroupResult:
     total_deviation = 0.0
     per_region: list[tuple[str, float]] = []
@@ -199,7 +233,12 @@ def calculate_balancing_group(
         total_deviation += dev
         per_region.append((gid, dev))
 
-    imbalance_price = 55.0
+    imbalance_price = _DEFAULT_IMBALANCE_PRICE
+    if imbalance_prices:
+        if total_deviation > 0:
+            imbalance_price = imbalance_prices.get("downward", imbalance_prices.get("upward", _DEFAULT_IMBALANCE_PRICE))
+        else:
+            imbalance_price = imbalance_prices.get("upward", imbalance_prices.get("downward", _DEFAULT_IMBALANCE_PRICE))
     imbalance_eur = abs(total_deviation) * imbalance_price
 
     return BalancingGroupResult(
@@ -216,13 +255,24 @@ def calculate_interconnect_schedule(
     atc_constraints: dict[str, float],
     current_flows: dict[str, float] | None = None,
     simulated_time: datetime | None = None,
+    crossborder_schedules: dict[str, float] | None = None,
 ) -> InterconnectScheduleResult:
     flows: list[tuple[str, float]] = []
     atc_vals: list[tuple[str, float]] = []
 
+    combined_atc = dict(atc_constraints)
+    if crossborder_schedules:
+        for border, schedule_mw in crossborder_schedules.items():
+            if border not in combined_atc:
+                combined_atc[border] = abs(schedule_mw) * 1.1
+
     for border in borders:
-        atc = atc_constraints.get(border, 0.0)
-        flow = current_flows.get(border, 0.0) if current_flows else 0.0
+        atc = combined_atc.get(border, 0.0)
+        flow = 0.0
+        if current_flows and border in current_flows:
+            flow = current_flows[border]
+        elif crossborder_schedules and border in crossborder_schedules:
+            flow = crossborder_schedules[border]
         flows.append((border, flow))
         atc_vals.append((border, atc))
 
@@ -239,14 +289,22 @@ def calculate_reserve_adequacy(
     largest_contingency_mw: float,
     reserve_margin_target: float,
     simulated_time: datetime | None = None,
+    reserve_status: dict[str, float] | None = None,
 ) -> ReserveAdequacyResult:
     total_available = sum(available_headroom.values())
+    if reserve_status:
+        reserve_total = sum(reserve_status.values())
+        if reserve_total > 0:
+            total_available = max(total_available, reserve_total)
     required = max(largest_contingency_mw, reserve_margin_target)
     adequate = total_available >= required
 
     headroom_by_region: list[tuple[str, float]] = [
         (region, mw) for region, mw in available_headroom.items()
     ]
+    if reserve_status:
+        for reserve_type, mw in reserve_status.items():
+            headroom_by_region.append((f"reserve_{reserve_type}", mw))
 
     return ReserveAdequacyResult(
         available_reserve_mw=total_available,
@@ -264,20 +322,28 @@ def calculate_imbalance_pricing(
     system_imbalance_mw: float,
     marginal_prices: dict[str, float] | None = None,
     simulated_time: datetime | None = None,
+    imbalance_prices: dict[str, float] | None = None,
 ) -> ImbalancePricingResult:
     activated: list[tuple[str, float]] = []
     total_cost = 0.0
 
+    default_price = _DEFAULT_IMBALANCE_PRICE
+    if imbalance_prices:
+        if system_imbalance_mw < 0:
+            default_price = imbalance_prices.get("upward", _DEFAULT_IMBALANCE_PRICE)
+        else:
+            default_price = imbalance_prices.get("downward", _DEFAULT_IMBALANCE_PRICE)
+
     for ab in activated_balancing:
         gid = ab.get("generator_id", "unknown")
         mw = ab.get("mw", 0.0)
-        price = ab.get("price", 55.0)
+        price = ab.get("price", default_price)
         activated.append((gid, mw))
         total_cost += mw * price
 
-    imbalance_price = 55.0
+    imbalance_price = default_price
     if marginal_prices:
-        imbalance_price = marginal_prices.get("system", 55.0)
+        imbalance_price = marginal_prices.get("system", default_price)
 
     return ImbalancePricingResult(
         system_imbalance_mw=system_imbalance_mw,

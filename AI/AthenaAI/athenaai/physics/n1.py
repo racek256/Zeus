@@ -7,6 +7,7 @@ flow, and check for violations. No LLM logic or heuristics inside this layer.
 
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -14,6 +15,11 @@ import importlib
 from typing import Any
 
 from athenaai.trace import trace, trace_scope
+
+try:
+    from athenaai.physics.cache import ResultCache as _ResultCache
+except ImportError:
+    _ResultCache = None  # type: ignore[assignment]
 
 
 class N1Status(str, Enum):
@@ -349,5 +355,221 @@ def n1_security_scan(
             secure_contingencies=tuple(secure_ids),
             violated_contingencies=tuple(violated_ids),
             message="N-1 scan passed" if all_passed else f"N-1 failed: {len(violated_ids)} violations",
+            timestamp=simulated_time,
+        )
+
+
+def _get_n1_parallel_executor(
+    max_workers: int | None = None,
+    use_process_pool: bool = True,
+) -> tuple[Any, bool]:
+    if not use_process_pool:
+        trace("n1._get_n1_parallel_executor.thread_pool", max_workers=max_workers)
+        return concurrent.futures.ThreadPoolExecutor(max_workers=max_workers), True
+
+    try:
+        from athenaai.physics.process_pool import PhysicsProcessPool
+        pool = PhysicsProcessPool(max_workers=max_workers)
+        pool._get_or_create_executor()
+        trace(
+            "n1._get_n1_parallel_executor.process_pool",
+            max_workers=pool.max_workers,
+            is_process_pool=pool.is_process_pool,
+        )
+        if not pool.is_process_pool:
+            pool.shutdown(wait=False)
+            trace("n1._get_n1_parallel_executor.fallback_to_thread")
+            return concurrent.futures.ThreadPoolExecutor(max_workers=max_workers), True
+        return pool, True
+    except Exception as exc:
+        trace(
+            "n1._get_n1_parallel_executor.process_pool_unavailable",
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        return concurrent.futures.ThreadPoolExecutor(max_workers=max_workers), True
+
+
+def _shutdown_executor_safe(executor: Any) -> None:
+    try:
+        shutdown = getattr(executor, "shutdown", None)
+        if shutdown is not None:
+            shutdown(wait=False)
+        else:
+            executor.__exit__(None, None, None)
+    except Exception:
+        pass
+
+
+def n1_parallel_scan(
+    network_state: dict[str, Any],
+    simulated_time: datetime | None = None,
+    critical_elements: list[dict[str, Any]] | None = None,
+    max_loading_percent: float = 100.0,
+    min_voltage_pu: float = 0.95,
+    max_voltage_pu: float = 1.05,
+    stop_on_first_violation: bool = False,
+    seed: int | None = None,
+    max_workers: int | None = None,
+    pool: Any | None = None,
+    use_cache: bool = False,
+    cache_ttl: float = 300.0,
+    use_process_pool: bool = True,
+) -> N1Result:
+    with trace_scope(
+        "n1_parallel_scan",
+        simulated_time=simulated_time.isoformat() if simulated_time is not None else None,
+        contingencies=len(critical_elements) if critical_elements else 0,
+        max_workers=max_workers,
+        seed=seed,
+        use_cache=use_cache,
+        use_process_pool=use_process_pool,
+    ):
+        if use_cache and _ResultCache is not None:
+            cache = _ResultCache()
+            cache_key = cache.make_key(
+                network_state,
+                operation="n1_scan",
+                max_loading=max_loading_percent,
+                min_v=min_voltage_pu,
+                max_v=max_voltage_pu,
+                seed=seed,
+            )
+            cached_result = cache.get(cache_key)
+            if cached_result is not None:
+                trace("n1_parallel_scan.cache_hit")
+                return N1Result(
+                    passed=cached_result.get("passed", True),
+                    status=N1Status(cached_result.get("status", "passed")),
+                    contingencies=tuple(),
+                    secure_contingencies=tuple(cached_result.get("secure_contingencies", [])),
+                    violated_contingencies=tuple(cached_result.get("violated_contingencies", [])),
+                    message=cached_result.get("message", "Cached N-1 result"),
+                    timestamp=simulated_time,
+                )
+
+        if critical_elements is None:
+            critical_elements = []
+            for b in network_state.get("branches", []):
+                critical_elements.append({"type": "branch", "id": b.get("branch_id"), "data": b})
+            for g in network_state.get("generators", []):
+                critical_elements.append({"type": "generator", "id": g.get("generator_id"), "data": g})
+
+        if not critical_elements:
+            trace("n1_parallel_scan.no_elements")
+            return N1Result(
+                passed=True,
+                status=N1Status.PASSED,
+                contingencies=(),
+                secure_contingencies=(),
+                violated_contingencies=(),
+                message="No critical elements to scan",
+                timestamp=simulated_time,
+            )
+
+        if len(critical_elements) <= 4:
+            trace("n1_parallel_scan.small_set_sequential", count=len(critical_elements))
+            return n1_security_scan(
+                network_state,
+                simulated_time=simulated_time,
+                critical_elements=critical_elements,
+                max_loading_percent=max_loading_percent,
+                min_voltage_pu=min_voltage_pu,
+                max_voltage_pu=max_voltage_pu,
+                stop_on_first_violation=stop_on_first_violation,
+            )
+
+        if pool is not None:
+            num_workers = max_workers or pool.max_workers
+            executor = pool
+            executor_owns = False
+        else:
+            num_workers = max_workers or min(8, len(critical_elements) // 2 + 1)
+            executor, executor_owns = _get_n1_parallel_executor(
+                max_workers=num_workers,
+                use_process_pool=use_process_pool,
+            )
+        chunk_size = max(1, len(critical_elements) // num_workers)
+        chunks = [
+            list(critical_elements[i : i + chunk_size])
+            for i in range(0, len(critical_elements), chunk_size)
+        ]
+        trace("n1_parallel_scan.chunks", num_chunks=len(chunks), chunk_size=chunk_size)
+
+        all_contingencies: list[Any] = []
+        all_secure: list[str] = []
+        all_violated: list[str] = []
+
+        try:
+            future_to_chunk = {}
+            for idx, chunk in enumerate(chunks):
+                future = executor.submit(
+                    n1_security_scan,
+                    network_state=network_state,
+                    simulated_time=simulated_time,
+                    critical_elements=chunk,
+                    max_loading_percent=max_loading_percent,
+                    min_voltage_pu=min_voltage_pu,
+                    max_voltage_pu=max_voltage_pu,
+                    stop_on_first_violation=stop_on_first_violation,
+                )
+                future_to_chunk[future] = idx
+
+            for future in concurrent.futures.as_completed(future_to_chunk):
+                try:
+                    chunk_result: N1Result = future.result()
+                    all_contingencies.extend(chunk_result.contingencies)
+                    all_secure.extend(chunk_result.secure_contingencies)
+                    all_violated.extend(chunk_result.violated_contingencies)
+                except Exception as exc:
+                    trace(
+                        "n1_parallel_scan.chunk_failed",
+                        chunk_index=future_to_chunk[future],
+                        error=str(exc)[:200],
+                    )
+        finally:
+            if executor_owns:
+                _shutdown_executor_safe(executor)
+
+        all_passed = len(all_violated) == 0
+
+        if use_cache and _ResultCache is not None:
+            cache = _ResultCache()
+            cache_key = cache.make_key(
+                network_state,
+                operation="n1_scan",
+                max_loading=max_loading_percent,
+                min_v=min_voltage_pu,
+                max_v=max_voltage_pu,
+                seed=seed,
+            )
+            cache.put(
+                cache_key,
+                {
+                    "passed": all_passed,
+                    "status": "passed" if all_passed else "failed",
+                    "secure_contingencies": all_secure,
+                    "violated_contingencies": all_violated,
+                    "message": "Cached parallel N-1 result",
+                },
+                ttl=cache_ttl,
+            )
+            trace("n1_parallel_scan.cache_stored")
+
+        trace(
+            "n1_parallel_scan.done",
+            passed=all_passed,
+            checked=len(all_contingencies),
+            secure=len(all_secure),
+            violated=len(all_violated),
+        )
+
+        return N1Result(
+            passed=all_passed,
+            status=N1Status.PASSED if all_passed else N1Status.FAILED,
+            contingencies=tuple(all_contingencies),
+            secure_contingencies=tuple(all_secure),
+            violated_contingencies=tuple(all_violated),
+            message="Parallel N-1 scan passed" if all_passed else f"Parallel N-1 failed: {len(all_violated)} violations",
             timestamp=simulated_time,
         )

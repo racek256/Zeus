@@ -2,7 +2,11 @@
 
 from athenaai.tools.physics import (
     ac_load_flow,
+    balancing_group_check,
+    black_start_capability,
+    carbon_intensity_calculation,
     day_ahead_schedule_optimization,
+    demand_response_potential,
     ev_flexible_load_model,
     frequency_response,
     imbalance_pricing,
@@ -11,15 +15,19 @@ from athenaai.tools.physics import (
     merit_order_dispatch,
     n1_contingency_scan,
     optimal_power_flow,
+    ramp_event_detector,
     redispatch_cost_calculation,
+    renewable_curtailment_analysis,
     reserve_adequacy_check,
     short_circuit,
     solar_nowcast,
     state_estimation,
+    synchrophasor_monitor,
     temperature_to_demand,
+    transmission_congestion_monitor,
+    voltage_stability_margin,
+    weather_impact_assessment,
     wind_nowcast,
-    ramp_event_detector,
-    balancing_group_check,
 )
 
 __all__ = [
@@ -42,4 +50,12 @@ __all__ = [
     "day_ahead_schedule_optimization",
     "temperature_to_demand",
     "ev_flexible_load_model",
+    "carbon_intensity_calculation",
+    "renewable_curtailment_analysis",
+    "transmission_congestion_monitor",
+    "voltage_stability_margin",
+    "demand_response_potential",
+    "black_start_capability",
+    "synchrophasor_monitor",
+    "weather_impact_assessment",
 ]
