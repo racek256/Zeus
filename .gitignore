@@ -44,3 +44,5 @@ dataset-backup/
 *.zip
 frontend/src/data/grid-buses.json
 frontend/src/data/grid-branches.json
+AI/greenhack-2026-\304\214EPS-dataset/
+AI/greenhack-2026-ČEPS-dataset/

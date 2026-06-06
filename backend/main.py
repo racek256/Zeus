@@ -346,10 +346,11 @@ from copilot import (
 
 class SimRequest(BaseModel):
     start_hour: int = 0
-    end_hour: int = 24
+    end_hour: int | None = None
     stop_on_failure: bool = True
     allow_fallback_physics: bool = False
     full_n1_scan: bool = False
+    model: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -381,6 +382,7 @@ def api_copilot_simulate(req: SimRequest):
             stop_on_failure=req.stop_on_failure,
             allow_fallback_physics=req.allow_fallback_physics,
             full_n1_scan=req.full_n1_scan,
+            model=req.model,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

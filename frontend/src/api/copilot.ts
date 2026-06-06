@@ -6,7 +6,7 @@ import type {
   SimulationHourResult,
 } from '../types/copilot'
 
-const BASE_URL = `http://${window.location.hostname}:8000`
+const BASE_URL = 'https://dev.racek.xyz'
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, init)
@@ -31,6 +31,7 @@ export async function startSimulation(opts?: {
   stop_on_failure?: boolean
   allow_fallback_physics?: boolean
   full_n1_scan?: boolean
+  model?: string
 }): Promise<Record<string, unknown>> {
   return fetchJson('/api/copilot/simulate', {
     method: 'POST',

@@ -72,7 +72,6 @@ export function MapView({ mapStyle, onStyleChange }: MapViewProps) {
   const mapRef = useRef<any>(null)
   const [is3d, setIs3d] = useState(false)
   const [topology, setTopology] = useState<TopologyData | null>(null)
-  const [snapshots, setSnapshots] = useState<string[]>([])
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null)
   const [snapshotData, setSnapshotData] = useState<SnapshotData | null>(null)
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
@@ -89,7 +88,6 @@ export function MapView({ mapStyle, onStyleChange }: MapViewProps) {
       try {
         const [topo, snaps] = await Promise.all([getTopology(), getSnapshots()])
         setTopology(topo)
-        setSnapshots(snaps)
         if (snaps.length > 0) {
           setSelectedTimestamp(snaps[0])
         }

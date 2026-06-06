@@ -35,7 +35,7 @@ export interface AlarmsData {
   Info: number
 }
 
-const BASE_URL = `http://${window.location.hostname}:8000`
+const BASE_URL = 'https://dev.racek.xyz'
 
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`)

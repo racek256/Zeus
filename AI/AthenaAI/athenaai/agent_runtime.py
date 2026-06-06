@@ -6,7 +6,7 @@ import asyncio
 import os
 import copy
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -859,7 +859,9 @@ class AgentRuntime:
         return responses
 
     async def collect_agent_outputs_async(
-        self, observations: dict[str, ObservationBundle]
+        self,
+        observations: dict[str, ObservationBundle],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, AgentResponse]:
         async def _run_agent(
             agent_id: str,
@@ -883,6 +885,17 @@ class AgentRuntime:
                 )
 
         tasks = [_run_agent(aid) for aid in ALL_AGENTS]
+        if progress_callback:
+            for agent_id in ALL_AGENTS:
+                obs = observations.get(agent_id)
+                if obs is not None:
+                    progress_callback({
+                        "phase": "agent_reasoning",
+                        "agent_id": agent_id,
+                        "hour_index": obs.hour_index,
+                        "timestamp": obs.timestamp.isoformat(),
+                        "message": f"{agent_id} is reasoning over grid telemetry",
+                    })
         results = await asyncio.gather(*tasks)
 
         responses: dict[str, AgentResponse] = {}
@@ -945,6 +958,17 @@ class AgentRuntime:
                     },
                 },
             )
+
+            if progress_callback:
+                progress_callback({
+                    "phase": "agent_complete",
+                    "agent_id": agent_id,
+                    "hour_index": obs.hour_index if obs else -1,
+                    "timestamp": timestamp.isoformat(),
+                    "message": f"{agent_id} completed reasoning",
+                    "reasoning": reasoning,
+                    "has_action": action is not None and not action.is_empty(),
+                })
 
         return responses
 

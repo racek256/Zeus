@@ -71,6 +71,15 @@ export interface AgentOutput {
   proposal_id?: string
 }
 
+export interface AgentState {
+  status: 'reasoning' | 'completed' | string
+  phase: string
+  message: string
+  reasoning?: string | null
+  has_action: boolean
+  updated_at: string
+}
+
 export interface Proposal {
   proposal_id: string
   hour_index: number
@@ -126,6 +135,24 @@ export interface SimulationStatus {
   started_at: string | null
   finished_at: string | null
   error: string | null
+  phase?: string
+  phase_detail?: string
+  active_agent?: string | null
+  agent_states?: Record<string, AgentState>
+}
+
+export interface LoadFlowResultSummary {
+  converged?: boolean
+  status?: string
+  message?: string
+  violations?: string[]
+}
+
+export interface EvaluationResult {
+  accepted?: boolean
+  validation_errors?: string[]
+  load_flow_result?: LoadFlowResultSummary | null
+  [key: string]: unknown
 }
 
 export interface SimulationHourResult {
@@ -146,5 +173,5 @@ export interface SimulationHourResult {
   } | null
   n1_failed: boolean
   step_failed: boolean
-  evaluation_results?: Record<string, unknown>[]
+  evaluation_results?: EvaluationResult[]
 }

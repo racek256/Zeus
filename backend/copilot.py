@@ -16,6 +16,7 @@ FastAPI endpoints so the frontend can display live simulation progress.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 import time as _time
@@ -172,6 +173,10 @@ class SimulationRun:
     started_at: str | None = None
     finished_at: str | None = None
     error: str | None = None
+    phase: str = "pending"
+    phase_detail: str = "Waiting to start"
+    active_agent: str | None = None
+    agent_states: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -187,6 +192,7 @@ class CopilotState:
 
 
 _state = CopilotState()
+_API_AGENT_ATTEMPTS = 3
 
 
 def get_copilot_state() -> CopilotState:
@@ -225,7 +231,7 @@ def initialise(dataset_root: Path | None = None, allow_fallback_physics: bool = 
 
 # ── Simulation loop ─────────────────────────────────────────────────────────
 
-from run_simulation import run_simulation as _run_simulation  # noqa: E402
+from run_simulation import run_simulation_async as _run_simulation_async  # noqa: E402
 
 
 def _run_sim_thread(
@@ -233,12 +239,44 @@ def _run_sim_thread(
     stop_on_failure: bool,
     allow_fallback_physics: bool,
     full_n1_scan: bool,
+    model: str | None,
 ) -> None:
-    """Background thread that runs the full simulation loop."""
+    asyncio.run(_run_sim_async(run, stop_on_failure, allow_fallback_physics, full_n1_scan, model))
+
+
+async def _run_sim_async(
+    run: SimulationRun,
+    stop_on_failure: bool,
+    allow_fallback_physics: bool,
+    full_n1_scan: bool,
+    model: str | None,
+) -> None:
     try:
+        def phase_callback(event: dict[str, Any]) -> None:
+            with _state.lock:
+                phase = str(event.get("phase", "running"))
+                agent_id = event.get("agent_id")
+                run.phase = phase
+                run.phase_detail = str(event.get("message", phase.replace("_", " ")))
+                run.current_hour = int(event.get("hour_index", run.current_hour))
+                run.active_agent = str(agent_id) if agent_id else None
+                if agent_id:
+                    state = "reasoning" if phase == "agent_reasoning" else "completed"
+                    run.agent_states[str(agent_id)] = {
+                        "status": state,
+                        "phase": phase,
+                        "message": run.phase_detail,
+                        "reasoning": event.get("reasoning"),
+                        "has_action": bool(event.get("has_action", False)),
+                        "updated_at": datetime.now().isoformat(),
+                    }
+
         def progress_callback(hour_result: dict[str, Any]) -> None:
             with _state.lock:
                 run.current_hour = hour_result["hour_index"]
+                run.phase = "hour_complete"
+                run.phase_detail = f"Hour {hour_result['hour_index']} completed"
+                run.active_agent = None
                 
                 proposals = []
                 for action in hour_result.get("actions", []):
@@ -254,6 +292,16 @@ def _run_sim_thread(
                         proposals.append(proposal)
                         _state.proposals.append(proposal)
                 
+                n1_passed = hour_result.get("n1_passed")
+                n1_violations = hour_result.get("n1_violations", [])
+                n1_detail = None if n1_passed is None else {
+                    "passed": n1_passed,
+                    "status": "passed" if n1_passed else "failed",
+                    "message": "N-1 scan " + ("passed" if n1_passed else "failed"),
+                    "contingencies_tested": len(n1_violations),
+                    "violated_contingencies": n1_violations,
+                }
+
                 hr = HourResult(
                     hour_index=hour_result["hour_index"],
                     timestamp=hour_result["timestamp"],
@@ -283,17 +331,11 @@ def _run_sim_thread(
                     proposals=proposals,
                     actions_executed=len(hour_result.get("actions", [])),
                     actions_accepted=sum(1 for a in hour_result.get("actions", []) if a.get("agent_id")),
-                    n1_passed=hour_result.get("n1_passed"),
-                    n1_detail={
-                        "passed": hour_result.get("n1_passed"),
-                        "status": "passed" if hour_result.get("n1_passed") else "failed",
-                        "message": "N-1 scan " + ("passed" if hour_result.get("n1_passed") else "failed"),
-                        "contingencies_tested": len(hour_result.get("n1_violations", [])),
-                        "violated_contingencies": hour_result.get("n1_violations", []),
-                    },
-                    n1_failed=hour_result.get("n1_passed") is False,
+                    n1_passed=n1_passed,
+                    n1_detail=n1_detail,
+                    n1_failed=n1_passed is False,
                     step_failed=hour_result["status"] == "failed",
-                    evaluation_results=[],
+                    evaluation_results=_jsonable(hour_result.get("evaluation_results", [])),
                 )
                 
                 run.hours.append(hr)
@@ -301,39 +343,85 @@ def _run_sim_thread(
                 
                 if hour_result["status"] == "failed":
                     run.failed_hours.append(hour_result["hour_index"])
-                if hour_result.get("n1_passed") is False:
+                if n1_passed is False:
                     run.n1_failed_hours.append(hour_result["hour_index"])
-        
-        result = _run_simulation(
-            dataset_root=DATASET_ROOT,
-            start_hour=run.start_hour,
-            end_hour=run.end_hour,
-            stop_on_failure=stop_on_failure,
-            allow_fallback_physics=allow_fallback_physics,
-            full_n1_scan=full_n1_scan,
-            progress_callback=progress_callback,
-        )
+
+        final_hour_results: list[dict[str, Any]] = []
+        final_result: dict[str, Any] | None = None
+        for attempt in range(1, _API_AGENT_ATTEMPTS + 1):
+            attempt_hour_results: list[dict[str, Any]] = []
+
+            def attempt_progress_callback(hour_result: dict[str, Any]) -> None:
+                attempt_hour_results.append(hour_result)
+
+            def attempt_phase_callback(event: dict[str, Any]) -> None:
+                updated = dict(event)
+                message = str(updated.get("message", updated.get("phase", "running")))
+                updated["message"] = f"{message} (attempt {attempt}/{_API_AGENT_ATTEMPTS})"
+                phase_callback(updated)
+
+            with _state.lock:
+                run.phase = "agent_retry" if attempt > 1 else "running"
+                run.phase_detail = f"Running AI agents, attempt {attempt}/{_API_AGENT_ATTEMPTS}"
+
+            final_result = await _run_simulation_async(
+                dataset_root=DATASET_ROOT,
+                start_hour=run.start_hour,
+                end_hour=run.end_hour,
+                stop_on_failure=stop_on_failure,
+                verbose=False,
+                model_overrides={"all": model} if model else None,
+                allow_fallback_physics=allow_fallback_physics,
+                full_n1_scan=full_n1_scan,
+                progress_callback=attempt_progress_callback,
+                phase_callback=attempt_phase_callback,
+            )
+            final_hour_results = attempt_hour_results
+            if not final_result.get("failed_hours"):
+                break
+            if attempt < _API_AGENT_ATTEMPTS:
+                with _state.lock:
+                    run.phase = "agent_retry"
+                    run.phase_detail = f"Retrying rejected AI output, attempt {attempt + 1}/{_API_AGENT_ATTEMPTS}"
+
+        raw_results_by_hour = {
+            int(raw_result.get("hour_index", -1)): raw_result
+            for raw_result in (final_result or {}).get("results", [])
+        }
+        for hour_result in final_hour_results:
+            raw_result = raw_results_by_hour.get(int(hour_result.get("hour_index", -1)))
+            if raw_result is not None:
+                hour_result["evaluation_results"] = raw_result.get("evaluation_results", [])
+            progress_callback(hour_result)
         
         successful = len([h for h in run.hours if not h.step_failed])
         attempted = run.completed_hours or 1
         run.replay_coverage_percent = round(successful / attempted * 100, 1)
         run.status = "completed"
+        run.phase = "completed"
+        run.phase_detail = "Simulation completed"
+        run.active_agent = None
         run.finished_at = datetime.now().isoformat()
         
     except Exception as exc:
         run.status = "failed"
+        run.phase = "failed"
+        run.phase_detail = str(exc)[:200]
+        run.active_agent = None
         run.error = str(exc)[:500]
         run.finished_at = datetime.now().isoformat()
 
 
 def start_simulation(
     start_hour: int = 0,
-    end_hour: int = 24,
+    end_hour: int | None = None,
     stop_on_failure: bool = True,
     allow_fallback_physics: bool = False,
     full_n1_scan: bool = False,
+    model: str | None = None,
 ) -> dict[str, Any]:
     global _state
+    resolved_end_hour = start_hour + 1 if end_hour is None else end_hour
     with _state.lock:
         if not _state.initialised:
             raise RuntimeError("Copilot not initialised — call /api/copilot/init first")
@@ -345,9 +433,9 @@ def start_simulation(
             run_id=run_id,
             status="running",
             start_hour=start_hour,
-            end_hour=end_hour,
+            end_hour=resolved_end_hour,
             current_hour=start_hour,
-            total_hours=end_hour - start_hour,
+            total_hours=resolved_end_hour - start_hour,
             completed_hours=0,
             failed_hours=[],
             n1_failed_hours=[],
@@ -359,7 +447,7 @@ def start_simulation(
 
         thread = threading.Thread(
             target=_run_sim_thread,
-            args=(run, stop_on_failure, allow_fallback_physics, full_n1_scan),
+            args=(run, stop_on_failure, allow_fallback_physics, full_n1_scan, model),
             daemon=True,
         )
         thread.start()
@@ -368,7 +456,8 @@ def start_simulation(
             "status": "started",
             "run_id": run_id,
             "start_hour": start_hour,
-            "end_hour": end_hour,
+            "end_hour": resolved_end_hour,
+            "model": model,
         }
 
 
@@ -392,6 +481,10 @@ def get_simulation_status() -> dict[str, Any]:
             "started_at": sim.started_at,
             "finished_at": sim.finished_at,
             "error": sim.error,
+            "phase": sim.phase,
+            "phase_detail": sim.phase_detail,
+            "active_agent": sim.active_agent,
+            "agent_states": sim.agent_states,
         }
 
 
@@ -414,6 +507,7 @@ def get_simulation_hours() -> list[dict[str, Any]]:
                 "n1_detail": h.n1_detail,
                 "n1_failed": h.n1_failed,
                 "step_failed": h.step_failed,
+                "evaluation_results": h.evaluation_results,
             }
             for h in sim.hours
         ]

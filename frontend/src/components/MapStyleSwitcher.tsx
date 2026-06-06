@@ -17,8 +17,6 @@ interface MapStyleSwitcherProps {
 export function MapStyleSwitcher({
   currentStyle,
   onChange,
-  is3d,
-  onViewModeChange,
 }: MapStyleSwitcherProps) {
   const [open, setOpen] = useState(false)
 

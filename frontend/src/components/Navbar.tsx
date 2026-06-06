@@ -4,7 +4,7 @@ export function Navbar() {
       {/* Title */}
       <div className="flex items-baseline gap-3">
         <h1 className="font-display text-lg font-bold tracking-tight text-on-background">
-          Grid Topology
+          Zeus
         </h1>
         <span className="text-xs font-medium text-on-surface-variant uppercase tracking-widest">
           Dashboard

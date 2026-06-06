@@ -227,7 +227,7 @@ def run_simulation(
                     "observation": obs,
                     "agent_responses": responses,
                     "evaluation_results": eval_results,
-                    "n1_passed": True if skip_redundant_fail_fast_n1 else n1_result.passed if n1_result is not None else None,
+                    "n1_passed": n1_result.passed if n1_result is not None else None,
                     "n1_violations": n1_result.violated_contingencies if n1_result is not None else (),
                     "step_failed": step_failure,
                 }
@@ -470,7 +470,7 @@ async def run_simulation_async(
                     "observation": obs,
                     "agent_responses": responses,
                     "evaluation_results": eval_results,
-                    "n1_passed": True if skip_redundant_fail_fast_n1 else n1_result.passed if n1_result is not None else None,
+                    "n1_passed": n1_result.passed if n1_result is not None else None,
                     "n1_violations": n1_result.violated_contingencies if n1_result is not None else (),
                     "step_failed": step_failure,
                 }
