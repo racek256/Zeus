@@ -29,7 +29,17 @@ from athenaai.config import (
     DATASET_SNAPSHOTS,
     DATASET_STATIC,
 )
-from athenaai.physics.engine import PhysicsStatus, run_ac_load_flow
+from athenaai.market.cost_curves import CostCurveCalculator
+from athenaai.market.data_loader import MarketDataLoader, MarketDataSnapshot
+from athenaai.physics.engine import (
+    PhysicsStatus,
+    run_ac_load_flow,
+    run_frequency_response,
+    run_parallel_n1,
+    run_short_circuit,
+    run_state_estimation,
+)
+from athenaai.physics.process_pool import PhysicsProcessPool
 from athenaai.trace import trace, trace_scope
 from athenaai.schema import (
     ActionBundle,
@@ -65,6 +75,8 @@ class GridSimulator:
         dataset_root: Path | None = None,
         start_hour: int = 0,
         allow_fallback_physics: bool = False,
+        market_data_loader: MarketDataLoader | None = None,
+        cost_calculator: CostCurveCalculator | None = None,
     ) -> None:
         self._dataset_root = dataset_root or DATASET_ROOT
         self._start_hour = start_hour
@@ -86,6 +98,12 @@ class GridSimulator:
 
         self._constraints = NetworkConstraints()
         self._initialized = False
+
+        self._market_loader = market_data_loader or MarketDataLoader()
+        self._cost_calculator = cost_calculator or CostCurveCalculator()
+        self._market_snapshot: MarketDataSnapshot | None = None
+
+        self._physics_pool: PhysicsProcessPool | None = None
 
     @staticmethod
     def _float_or_default(value: Any, default: float = 0.0) -> float:
@@ -137,6 +155,32 @@ class GridSimulator:
     @property
     def current_network_state(self) -> dict[str, Any]:
         return self._current_network_state
+
+    @property
+    def cost_calculator(self) -> CostCurveCalculator:
+        return self._cost_calculator
+
+    @property
+    def market_snapshot(self) -> MarketDataSnapshot | None:
+        return self._market_snapshot
+
+    @property
+    def physics_pool(self) -> PhysicsProcessPool | None:
+        return self._physics_pool
+
+    def get_or_create_physics_pool(self, max_workers: int | None = None) -> PhysicsProcessPool:
+        if self._physics_pool is None or not self._physics_pool.is_available:
+            max_w = max_workers or 2
+            self._physics_pool = PhysicsProcessPool(max_workers=max_w)
+        return self._physics_pool
+
+    def shutdown_physics_pool(self) -> None:
+        if self._physics_pool is not None:
+            try:
+                self._physics_pool.shutdown(wait=False, timeout=10.0)
+            except Exception:
+                pass
+            self._physics_pool = None
 
     def _sync_current_network_state_to_hour(self, hour: int) -> None:
         if not self._current_network_state:
@@ -285,6 +329,11 @@ class GridSimulator:
                     self._loads_ts[hour][load_id] = float(actual_mw_str)
 
     def load_fuel_prices(self) -> dict[str, float]:
+        fuel_prices = self._cost_calculator.fuel_prices
+        if fuel_prices:
+            self._fuel_prices = fuel_prices
+            return self._fuel_prices
+
         fuel_path = Path(DATASET_FUEL_PRICES)
         if fuel_path.exists():
             with open(fuel_path, newline="", encoding="utf-8") as f:
@@ -365,6 +414,19 @@ class GridSimulator:
         self._current_network_state = copy.deepcopy(self._topology)
         self._sync_current_network_state_to_hour(self._current_hour)
         self._initialized = True
+
+    def load_market_data(self, force_refresh: bool = False) -> MarketDataSnapshot:
+        if not force_refresh and self._market_snapshot is not None:
+            return self._market_snapshot
+        sim_date = self.current_timestamp.date()
+        try:
+            self._market_snapshot = self._market_loader.get_market_snapshot(sim_date)
+        except Exception:
+            self._market_snapshot = MarketDataSnapshot(
+                timestamp=self.current_timestamp,
+                data_source="error_fallback",
+            )
+        return self._market_snapshot
 
     def get_observation(self, hour: int | None = None) -> ObservationBundle:
         h = hour if hour is not None else self._current_hour
@@ -493,13 +555,40 @@ class GridSimulator:
                 )
             )
 
+        snap = self.load_market_data()
+        marginal = 50.0
+        imbalance = 55.0
+        if snap.day_ahead_prices:
+            day_prices = list(snap.day_ahead_prices.values())
+            marginal = sum(day_prices) / len(day_prices)
+            specific_hour = h % 24
+            if specific_hour in snap.day_ahead_prices:
+                marginal = snap.day_ahead_prices[specific_hour]
+        if snap.imbalance_prices:
+            imb_vals = list(snap.imbalance_prices.values())
+            if imb_vals:
+                imbalance = sum(imb_vals) / len(imb_vals)
+        reserve_total = sum(snap.generation_forecast.values()) * 0.05
+        reserve_req = max(snap.generation_forecast.values()) * 0.03 if snap.generation_forecast else 400.0
+
         market = MarketState(
             timestamp=ts,
-            system_marginal_price_eur_mwh=50.0,
-            imbalance_price_eur_mwh=55.0,
-            total_reserve_mw=500.0,
-            reserve_requirement_mw=400.0,
+            system_marginal_price_eur_mwh=marginal,
+            imbalance_price_eur_mwh=imbalance,
+            total_reserve_mw=reserve_total if reserve_total > 0 else 500.0,
+            reserve_requirement_mw=reserve_req if reserve_req > 0 else 400.0,
             atc_values={"DE": 1500.0, "SK": 1000.0, "AT": 800.0, "PL": 600.0},
+            day_ahead_prices=snap.day_ahead_prices,
+            imbalance_prices=snap.imbalance_prices,
+            crossborder_schedules=snap.crossborder_flows,
+            reserve_status={
+                "FCR": reserve_req * 0.15 if reserve_req > 0 else 60.0,
+                "aFRR": reserve_req * 0.35 if reserve_req > 0 else 140.0,
+                "mFRR": reserve_req * 0.50 if reserve_req > 0 else 200.0,
+            },
+            carbon_price_eur_ton=snap.carbon_price_eur_ton,
+            data_source=snap.data_source,
+            price_uncertainty_eur_mwh=5.0,
         )
 
         return ObservationBundle(
@@ -534,6 +623,18 @@ class GridSimulator:
     ) -> dict[str, Any]:
         """Predict action acceptance without committing state or history."""
         return self._evaluate_action(action, observation, commit=False)
+
+    def _run_load_flow(
+        self, network_state: dict[str, Any], simulated_time: datetime | None = None
+    ) -> Any:
+        pool = self._physics_pool
+        if pool is not None and pool.is_available:
+            try:
+                future = pool.submit(run_ac_load_flow, network_state, simulated_time)
+                return future.result(timeout=30.0)
+            except Exception:
+                trace("GridSimulator._run_load_flow.process_pool_failed", error_type="ProcessError")
+        return run_ac_load_flow(network_state, simulated_time)
 
     def _evaluate_action(
         self, action: ActionBundle, observation: ObservationBundle, commit: bool
@@ -583,7 +684,7 @@ class GridSimulator:
                         l["p_mw"] = max(0.0, l.get("p_mw", 0.0) - flag.shed_mw)
 
             with trace_scope("GridSimulator.evaluate.run_ac_load_flow", hour=self._current_hour):
-                lf_result = run_ac_load_flow(modified_state, self.current_timestamp)
+                lf_result = self._run_load_flow(modified_state, self.current_timestamp)
 
             violations = lf_result.violations(
                 self._constraints.max_branch_loading_percent,
@@ -641,6 +742,118 @@ class GridSimulator:
 
     def get_missing_gen_hours(self) -> set[int]:
         return set(self._missing_gen_hours)
+
+    def validate_state_with_estimation(
+        self,
+        measurements: dict[str, Any] | None = None,
+        min_voltage_pu: float | None = None,
+        max_voltage_pu: float | None = None,
+    ) -> dict[str, Any]:
+        min_v = min_voltage_pu or self._constraints.min_voltage_pu
+        max_v = max_voltage_pu or self._constraints.max_voltage_pu
+
+        with trace_scope("GridSimulator.validate_state_with_estimation"):
+            result = run_state_estimation(
+                self._current_network_state,
+                measurements=measurements,
+                min_voltage_pu=min_v,
+                max_voltage_pu=max_v,
+                simulated_time=self.current_timestamp,
+            )
+            bus_estimates = {
+                bid: {"vm_pu": vm_pu, "va_deg": va_deg}
+                for bid, vm_pu, va_deg in result.bus_estimates
+            }
+            return {
+                "success": result.success,
+                "status": result.status.value,
+                "bus_estimates": bus_estimates,
+                "estimated_v_mag_pu": result.estimated_v_mag_pu,
+                "estimated_v_angle_deg": result.estimated_v_angle_deg,
+                "chi_squared": result.chi_squared,
+                "bad_data_detected": result.bad_data_detected,
+                "suspicious_measurements": list(result.suspicious_measurements),
+                "message": result.message,
+            }
+
+    def run_protection_coordination(
+        self,
+        fault_bus: str = "",
+        fault_type: str = "3ph",
+    ) -> dict[str, Any]:
+        with trace_scope("GridSimulator.run_protection_coordination", fault_bus=fault_bus, fault_type=fault_type):
+            result = run_short_circuit(
+                self._current_network_state,
+                fault_bus=fault_bus,
+                fault_type=fault_type,
+                simulated_time=self.current_timestamp,
+            )
+            bus_voltages = {
+                bid: {"vm_pu": vm_pu, "va_deg": va_deg}
+                for bid, vm_pu, va_deg in result.bus_voltages
+            }
+            gen_contributions = {
+                gen_id: ikss_ka
+                for gen_id, ikss_ka in result.generator_contributions
+            }
+            return {
+                "success": result.success,
+                "status": result.status.value,
+                "fault_current_ka": result.fault_current_ka,
+                "fault_power_mva": result.fault_power_mva,
+                "bus_voltages": bus_voltages,
+                "generator_contributions": gen_contributions,
+                "message": result.message,
+            }
+
+    def assess_stability(
+        self,
+        disturbance: dict[str, Any] | None = None,
+        min_frequency_hz: float | None = None,
+    ) -> dict[str, Any]:
+        min_f = min_frequency_hz or self._constraints.min_frequency_hz
+
+        with trace_scope("GridSimulator.assess_stability"):
+            result = run_frequency_response(
+                self._current_network_state,
+                disturbance=disturbance,
+                min_frequency_hz=min_f,
+                simulated_time=self.current_timestamp,
+            )
+            return {
+                "success": result.success,
+                "status": result.status.value,
+                "frequency_nadir_hz": result.frequency_nadir_hz,
+                "rocof_hz_s": result.rocof_hz_s,
+                "settling_frequency_hz": result.settling_frequency_hz,
+                "system_inertia_s": result.system_inertia_s,
+                "critical_clearing_time_cycles": result.critical_clearing_time_cycles,
+                "delta_p_mw": result.delta_p_mw,
+                "message": result.message,
+            }
+
+    def run_parallel_n1_scan(
+        self,
+        contingencies: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        with trace_scope("GridSimulator.run_parallel_n1_scan"):
+            result = run_parallel_n1(
+                self._current_network_state,
+                contingencies=contingencies,
+                max_loading_percent=self._constraints.max_branch_loading_percent,
+                min_voltage_pu=self._constraints.min_voltage_pu,
+                max_voltage_pu=self._constraints.max_voltage_pu,
+                simulated_time=self.current_timestamp,
+                pool=self._physics_pool,
+            )
+            return {
+                "passed": result.passed,
+                "status": result.status.value,
+                "secure_contingencies": list(result.secure_contingencies),
+                "violated_contingencies": list(result.violated_contingencies),
+                "num_contingencies": len(result.contingencies),
+                "message": result.message,
+            }
 
     def rollback_to_hour(self, hour: int) -> None:
         self._historical = [h for h in self._historical if h.hour_index < hour]

@@ -7,7 +7,8 @@ never hidden chain-of-thought.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 import importlib
 from typing import Any, Protocol
 
@@ -28,6 +29,19 @@ class ModelActionClient(Protocol):
         timeout_s: float = 60.0,
     ) -> str:
         """Return a JSON response string from a model."""
+        ...
+
+
+class AsyncModelActionClient(Protocol):
+    async def complete_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Return a JSON response string from a model (async)."""
         ...
 
 
@@ -81,3 +95,105 @@ class OpenCodeModelClient:
             raise
         except Exception as exc:
             raise ModelClientError(f"Model API call failed: {type(exc).__name__}: {str(exc)[:500]}") from exc
+
+    async def complete_json_async(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Bridge: run the sync complete_json in a thread pool via asyncio."""
+        return await asyncio.to_thread(
+            self.complete_json,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_s=timeout_s,
+        )
+
+
+@dataclass
+class AsyncOpenCodeModelClient:
+    """Async model client that uses openai.AsyncOpenAI for non-blocking LLM calls."""
+
+    api_key: str | None = None
+    api_url: str | None = None
+    _client: Any = field(default=None, init=False, repr=False)
+
+    async def complete_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_s: float = 60.0,
+    ) -> str:
+        if self._client is None:
+            api_key = self.api_key if self.api_key is not None else get_opencode_api_key()
+            if not api_key:
+                raise ModelClientError("OPENCODE_GO_API_KEY is not configured")
+
+            api_url = self.api_url if self.api_url is not None else get_opencode_api_url()
+            try:
+                openai_module = importlib.import_module("openai")
+            except ImportError as exc:
+                raise ModelClientError("openai Python package is required for model control") from exc
+
+            self._client = openai_module.AsyncOpenAI(
+                api_key=api_key,
+                base_url=api_url,
+            )
+
+        try:
+            completion = await self._client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout=timeout_s,
+            )
+            choices: Any = getattr(completion, "choices", None)
+            if not isinstance(choices, list) or not choices:
+                raise ModelClientError("Model API response did not include choices")
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None)
+            if not isinstance(content, str) or not content.strip():
+                raise ModelClientError("Model API message content was empty")
+            return content
+        except ModelClientError:
+            raise
+        except asyncio.TimeoutError as exc:
+            raise ModelClientError(
+                f"Model API call timed out after {timeout_s}s"
+            ) from exc
+        except Exception as exc:
+            raise ModelClientError(
+                f"Model API call failed: {type(exc).__name__}: {str(exc)[:500]}"
+            ) from exc
+
+    async def complete_json_async(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Async alias for complete_json - same behavior."""
+        return await self.complete_json(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_s=timeout_s,
+        )
+
+    async def close(self) -> None:
+        """Close the underlying AsyncOpenAI client if it was created."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None

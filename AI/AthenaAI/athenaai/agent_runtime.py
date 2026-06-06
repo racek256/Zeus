@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import copy
 import json
@@ -212,6 +213,30 @@ class AgentRuntime:
             "first_failed_contingency": self._jsonable(failed) if failed is not None else None,
         }
 
+    async def _build_n1_context_async(self, observation: ObservationBundle) -> dict[str, Any]:
+        pool = self._simulator.physics_pool
+        if pool is not None and pool.is_available and pool.is_process_pool:
+            loop = asyncio.get_running_loop()
+            try:
+                return await loop.run_in_executor(
+                    pool.executor,
+                    self._build_n1_context,
+                    observation,
+                )
+            except Exception:
+                trace("agent_runtime._build_n1_context_async.pool_failed")
+        return await asyncio.to_thread(self._build_n1_context, observation)
+
+    async def _run_in_pool_or_thread(self, func: Any, *args: Any) -> Any:
+        pool = self._simulator.physics_pool
+        if pool is not None and pool.is_available and pool.is_process_pool:
+            loop = asyncio.get_running_loop()
+            try:
+                return await loop.run_in_executor(pool.executor, func, *args)
+            except Exception:
+                trace("agent_runtime._run_in_pool_or_thread.pool_failed")
+        return await asyncio.to_thread(func, *args)
+
     def _parse_model_action(
         self,
         agent_id: str,
@@ -320,18 +345,48 @@ class AgentRuntime:
         agent_id: str,
         observation: ObservationBundle,
     ) -> tuple[ActionBundle | None, str] | None:
-        n1_context = self._build_n1_context(observation)
+        """Sync wrapper around the async model control implementation."""
+        return asyncio.run(
+            self._build_model_control_action_async(agent_id, observation)
+        )
+
+    async def _build_model_control_action_async(
+        self,
+        agent_id: str,
+        observation: ObservationBundle,
+    ) -> tuple[ActionBundle | None, str] | None:
+        n1_context = await self._build_n1_context_async(observation)
         user_prompt = self._build_model_control_prompt(agent_id, observation, n1_context)
         model = self.get_agent_model(agent_id)
+
         try:
-            raw_response = self._model_client.complete_json(
-                model=model,
-                system_prompt=self._agent_configs[agent_id].system_prompt,
-                user_prompt=user_prompt,
-                timeout_s=60.0,
+            complete_json_async = getattr(
+                self._model_client, "complete_json_async", None
             )
+            if complete_json_async is not None:
+                raw_response = await asyncio.wait_for(
+                    complete_json_async(
+                        model=model,
+                        system_prompt=self._agent_configs[agent_id].system_prompt,
+                        user_prompt=user_prompt,
+                        timeout_s=60.0,
+                    ),
+                    timeout=70.0,
+                )
+            else:
+                raw_response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._model_client.complete_json,
+                        model=model,
+                        system_prompt=self._agent_configs[agent_id].system_prompt,
+                        user_prompt=user_prompt,
+                        timeout_s=60.0,
+                    ),
+                    timeout=70.0,
+                )
             action, reasoning = self._parse_model_action(agent_id, observation, raw_response)
-        except (ModelClientError, ValueError, json.JSONDecodeError) as exc:
+
+        except (ModelClientError, ValueError, json.JSONDecodeError, asyncio.TimeoutError) as exc:
             self._audit_logger.log(
                 agent_id=agent_id,
                 action="model_control",
@@ -386,6 +441,39 @@ class AgentRuntime:
             return model_decision
 
         return self._build_deterministic_coordinator_action(agent_id, observation)
+
+    async def _build_agent_action_async(
+        self,
+        agent_id: str,
+        observation: ObservationBundle,
+    ) -> tuple[ActionBundle | None, str]:
+        if agent_id == AGENT_ORACLE:
+            return (
+                None,
+                (
+                    f"Oracle diagnostic review using model {self.get_agent_model(agent_id)}: "
+                    "read-only agent, no dispatch authority."
+                ),
+            )
+
+        if agent_id != AGENT_COORDINATOR:
+            return (
+                None,
+                (
+                    f"Regional monitoring for {agent_id} using model {self.get_agent_model(agent_id)}: "
+                    "national coordinator has binding dispatch authority in this control loop."
+                ),
+            )
+
+        model_decision = await self._build_model_control_action_async(
+            agent_id, observation
+        )
+        if model_decision is not None:
+            return model_decision
+
+        return await asyncio.to_thread(
+            self._build_deterministic_coordinator_action, agent_id, observation
+        )
 
     def _build_deterministic_coordinator_action(
         self,
@@ -735,6 +823,96 @@ class AgentRuntime:
 
         return responses
 
+    async def collect_agent_outputs_async(
+        self, observations: dict[str, ObservationBundle]
+    ) -> dict[str, AgentResponse]:
+        async def _run_agent(
+            agent_id: str,
+        ) -> tuple[str, ActionBundle | None, str, datetime, str | None]:
+            obs = observations.get(agent_id)
+            if obs is None:
+                return agent_id, None, "", datetime.now(), None
+
+            try:
+                action, reasoning = await self._build_agent_action_async(
+                    agent_id, obs
+                )
+                return agent_id, action, reasoning, obs.timestamp, None
+            except Exception as exc:
+                return (
+                    agent_id,
+                    None,
+                    f"Agent {agent_id} encountered an error: {type(exc).__name__}",
+                    obs.timestamp,
+                    type(exc).__name__,
+                )
+
+        tasks = [_run_agent(aid) for aid in ALL_AGENTS]
+        results = await asyncio.gather(*tasks)
+
+        responses: dict[str, AgentResponse] = {}
+        for agent_id, action, reasoning, timestamp, error_type in sorted(
+            results, key=lambda r: r[0]
+        ):
+            if error_type is not None and agent_id == AGENT_COORDINATOR:
+                obs = observations.get(agent_id)
+                if obs is not None:
+                    action, reasoning = await asyncio.to_thread(
+                        self._build_deterministic_coordinator_action,
+                        agent_id,
+                        obs,
+                    )
+
+            response = AgentResponse(
+                agent_id=agent_id,
+                action=action,
+                reasoning=reasoning,
+                timestamp=timestamp,
+            )
+            responses[agent_id] = response
+            decision = AgentDecision(
+                agent_id=agent_id,
+                action=action,
+                reasoning=reasoning,
+                timestamp=timestamp,
+            )
+            if agent_id == AGENT_COORDINATOR:
+                self._coordinator = decision
+            elif agent_id == AGENT_ORACLE:
+                self._oracle = decision
+            elif agent_id in REGIONAL_AGENTS:
+                self._regional_agents[agent_id] = decision
+
+            obs = observations.get(agent_id)
+            self._audit_logger.log(
+                agent_id=agent_id,
+                action="decide",
+                result="action_proposed" if action is not None else "monitoring_only",
+                metadata={
+                    "hour_index": obs.hour_index if obs else -1,
+                    "timestamp": timestamp.isoformat(),
+                    "has_violations": obs.has_violations() if obs else False,
+                    "action_empty": action is None or action.is_empty(),
+                    "reasoning": reasoning,
+                    "action_summary": {
+                        "generator_setpoint_changes": (
+                            len(action.generator_setpoint_changes) if action else 0
+                        ),
+                        "redispatch_requests": (
+                            len(action.redispatch_requests) if action else 0
+                        ),
+                        "load_shedding_flags": (
+                            len(action.load_shedding_flags) if action else 0
+                        ),
+                        "interconnect_flow_adjustments": (
+                            len(action.interconnect_flow_adjustments) if action else 0
+                        ),
+                    },
+                },
+            )
+
+        return responses
+
     def _materialize_redispatch(self, action: ActionBundle) -> ActionBundle:
         trace(
             "AgentRuntime._materialize_redispatch.start",
@@ -887,6 +1065,151 @@ class AgentRuntime:
 
         return results
 
+    async def execute_validated_actions_async(
+        self, actions: list[ActionBundle]
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        with trace_scope(
+            "AgentRuntime.execute_validated_actions_async", actions=len(actions)
+        ):
+            for index, action in enumerate(actions):
+                trace(
+                    "AgentRuntime.execute_validated_actions_async.action",
+                    index=index,
+                    agent_id=action.agent_id,
+                    empty=action.is_empty(),
+                )
+                if action.is_empty():
+                    continue
+
+                obs = self._simulator.get_observation()
+                physical_action = self._materialize_redispatch(action)
+                with trace_scope(
+                    "AgentRuntime.execute_validated_actions_async.simulator.evaluate",
+                    agent_id=physical_action.agent_id,
+                    setpoint_changes=len(physical_action.generator_setpoint_changes),
+                ):
+                    prediction_result = await self._run_in_pool_or_thread(
+                        self._simulator.simulate_action,
+                        physical_action,
+                        obs,
+                    )
+                    self._audit_logger.log(
+                        agent_id=physical_action.agent_id,
+                        action="simulate_action",
+                        result="accepted" if prediction_result["accepted"] else "rejected",
+                        metadata={
+                            "accepted": prediction_result["accepted"],
+                            "committed": prediction_result.get("committed", False),
+                            "materialized_setpoint_changes": len(
+                                physical_action.generator_setpoint_changes
+                            ),
+                            "load_shedding_flags": len(
+                                physical_action.load_shedding_flags
+                            ),
+                            "redispatch_requests": len(
+                                physical_action.redispatch_requests
+                            ),
+                            "validation_errors": prediction_result.get(
+                                "validation_errors", []
+                            ),
+                            "violations": (
+                                prediction_result.get("load_flow_result", {}).get(
+                                    "violations", []
+                                )
+                                if prediction_result.get("load_flow_result")
+                                else []
+                            ),
+                            "reasoning": next(
+                                (
+                                    decision.reasoning
+                                    for decision in [
+                                        self._coordinator,
+                                        *self._regional_agents.values(),
+                                        self._oracle,
+                                    ]
+                                    if decision is not None
+                                    and decision.agent_id == physical_action.agent_id
+                                ),
+                                "",
+                            ),
+                        },
+                    )
+                    eval_result = await self._run_in_pool_or_thread(
+                        self._simulator.evaluate,
+                        physical_action,
+                        obs,
+                    )
+                results.append(eval_result)
+
+                trace(
+                    "AgentRuntime.execute_validated_actions_async.result",
+                    agent_id=physical_action.agent_id,
+                    accepted=eval_result["accepted"],
+                    load_flow_status=(
+                        eval_result.get("load_flow_result") or {}
+                    ).get("status"),
+                )
+
+                self._audit_logger.log(
+                    agent_id=physical_action.agent_id,
+                    action="execute_action",
+                    result="accepted" if eval_result["accepted"] else "rejected",
+                    metadata={
+                        "accepted": eval_result["accepted"],
+                        "materialized_setpoint_changes": len(
+                            physical_action.generator_setpoint_changes
+                        ),
+                        "redispatch_requests": len(
+                            physical_action.redispatch_requests
+                        ),
+                        "validation_errors": eval_result.get(
+                            "validation_errors", []
+                        ),
+                        "violations": (
+                            eval_result.get("load_flow_result", {}).get(
+                                "violations", []
+                            )
+                            if eval_result.get("load_flow_result")
+                            else []
+                        ),
+                    },
+                )
+
+        return results
+
+    async def run_hour_step_async(
+        self, hour: int
+    ) -> dict[str, Any]:
+        obs = self._simulator.step(hour)
+
+        self._audit_logger.log(
+            agent_id="simulator",
+            action="step",
+            result="observation_generated",
+            metadata={
+                "hour_index": hour,
+                "timestamp": obs.timestamp.isoformat(),
+            },
+        )
+
+        observations = self.distribute_observation(obs)
+        responses = await self.collect_agent_outputs_async(observations)
+
+        actions: list[ActionBundle] = []
+        for agent_id, response in responses.items():
+            if response.action and not response.action.is_empty():
+                actions.append(response.action)
+
+        eval_results = await self.execute_validated_actions_async(actions)
+
+        return {
+            "hour_index": hour,
+            "observation": obs,
+            "agent_responses": responses,
+            "evaluation_results": eval_results,
+        }
+
     def run_hour_step(
         self, hour: int
     ) -> dict[str, Any]:
@@ -923,6 +1246,25 @@ class AgentRuntime:
         return self._opencode_api_key is not None
 
 
+class AsyncAgentRuntime(AgentRuntime):
+    """Variant of AgentRuntime with all methods exposed as native async."""
+
+    async def collect_agent_outputs(  # type: ignore[override]
+        self, observations: dict[str, ObservationBundle]
+    ) -> dict[str, AgentResponse]:
+        return await self.collect_agent_outputs_async(observations)
+
+    async def execute_validated_actions(  # type: ignore[override]
+        self, actions: list[ActionBundle]
+    ) -> list[dict[str, Any]]:
+        return await self.execute_validated_actions_async(actions)
+
+    async def run_hour_step(  # type: ignore[override]
+        self, hour: int
+    ) -> dict[str, Any]:
+        return await self.run_hour_step_async(hour)
+
+
 def create_runtime(
     simulator: GridSimulator,
     audit_logger: AuditLogger | None = None,
@@ -930,6 +1272,20 @@ def create_runtime(
     model_client: ModelActionClient | None = None,
 ) -> AgentRuntime:
     return AgentRuntime(
+        simulator=simulator,
+        audit_logger=audit_logger,
+        model_overrides=model_overrides,
+        model_client=model_client,
+    )
+
+
+def create_async_runtime(
+    simulator: GridSimulator,
+    audit_logger: AuditLogger | None = None,
+    model_overrides: Mapping[str, str] | None = None,
+    model_client: ModelActionClient | None = None,
+) -> AsyncAgentRuntime:
+    return AsyncAgentRuntime(
         simulator=simulator,
         audit_logger=audit_logger,
         model_overrides=model_overrides,

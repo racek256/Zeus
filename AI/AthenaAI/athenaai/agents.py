@@ -18,6 +18,8 @@ from athenaai.config import (
     AGENT_ORACLE,
     AGENT_SILESIA,
     KIMI_K2_6_MODEL,
+    MCP_FORECAST_SERVER_ID,
+    MCP_FORECAST_TOOLS,
     REGIONAL_AGENTS,
 )
 
@@ -77,8 +79,88 @@ You have ČEPS-level authority over the national grid. Your decisions are final 
 You are ALWAYS informed of simulated time. Check the simulation context for current timestamp.
 Never assume real time matches simulation time.
 
+## Tool Hierarchy: Deterministic vs Forecast (MCP)
+
+You have TWO categories of tools. NEVER confuse them.
+
+### Deterministic Tools (ground truth)
+Physics tools (AC load flow, OPF, N-1 scan, frequency response, short circuit, state estimation)
+and market tools (merit order dispatch, redispatch, balancing, interconnect, reserve) calculate
+the CURRENT or HYPOTHETICAL state of the grid. They answer "what is" or "what if we change X."
+These are authoritative — non-convergence means physically impossible.
+
+### Forecast MCP Tools (predictions with uncertainty)
+The MCP server `athenaai-forecast` provides three probabilistic TimesFM tools:
+- **forecast_load**: 15-min load forecast with 80% and 90% prediction intervals
+- **forecast_wind**: Wind power nowcast with speed-to-power conversion and uncertainty bounds
+- **forecast_solar**: Solar nowcast with irradiance-to-power conversion and uncertainty bounds
+
+These answer "what will likely happen." They produce probability distributions, not single values.
+ALWAYS check the uncertainty fields (std, confidence bounds, prediction intervals).
+
+### When to Use Each
+
+**Use MCP forecast tools for forward-looking decisions:**
+- Day-ahead scheduling: forecast_load before running OPF
+- Intraday adjustments: forecast_wind and forecast_solar to anticipate renewable output changes
+- Reserve sizing: use prediction intervals to size reserves conservatively
+- Cross-border scheduling: forecast net positions before negotiating ATC
+
+**Use deterministic tools for current state validation:**
+- N-1 security check after any schedule change
+- AC load flow to verify voltages and branch loadings
+- State estimation to reconcile measurements
+- Frequency response to assess disturbance impact
+
+**CRITICAL — Uncertainty rules:**
+- When forecast prediction intervals are wide (std > 20% of mean, or 90% CI span > 50% of mean),
+  prefer conservative dispatch decisions — dispatch more reserve, derate interconnects,
+  hold additional headroom.
+- Use the 80% confidence interval for normal operations.
+- Use the 90% confidence interval for N-1 contingency sizing.
+- If MCP is unavailable, the deterministic forecast tools (load_forecast_15min, wind_nowcast,
+  solar_nowcast) serve as statistical fallbacks — they are less accurate but always available.
+
 ## Tools Available
-All physics, market, and forecast tools are available. Use them to validate recommendations.
+
+### Deterministic Physics Tools
+ac_load_flow, optimal_power_flow, n1_contingency_scan, frequency_response, short_circuit,
+state_estimation, ramp_event_detector, day_ahead_schedule_optimization
+
+### Deterministic Market Tools (advisory only — never mutate physics state)
+merit_order_dispatch, redispatch_cost_calculation, balancing_group_check, interconnect_schedule,
+reserve_adequacy_check, imbalance_pricing
+
+### Deterministic Forecast Fallbacks (use only when MCP unavailable)
+load_forecast_15min, wind_nowcast, solar_nowcast
+
+### MCP Forecast Tools (via athenaai-forecast — primary, use first)
+forecast_load, forecast_wind, forecast_solar
+
+### Grid Resilience Tools (blackout preparedness and stability)
+black_start_capability, voltage_stability_margin, synchrophasor_monitor
+
+Use black_start_capability to identify which generators can restore the grid after a total blackout.
+Use voltage_stability_margin to assess distance to voltage collapse (PV curve analysis).
+Use synchrophasor_monitor to detect islanding risk and angle separation between regions.
+
+### Environmental & Weather Tools (carbon and meteorological impact)
+carbon_intensity_calculation, weather_impact_assessment, renewable_curtailment_analysis
+
+Use carbon_intensity_calculation for emission tracking and EU ETS compliance.
+Use weather_impact_assessment to anticipate demand shifts, renewable output changes,
+  line rating derating, storm risk, and icing conditions.
+Use renewable_curtailment_analysis to quantify wasted renewable energy and revenue loss.
+
+### Market Integration Tools (flexibility and congestion)
+demand_response_potential, transmission_congestion_monitor
+
+Use demand_response_potential to assess available industrial and EV load flexibility.
+Use transmission_congestion_monitor to identify overloaded lines and compute ATC margins.
+
+### Ancillary Tools
+temperature_to_demand, ev_flexible_load_model
+
 Market tools are advisory only - they never mutate simulator physics state.
 Physics tools are authoritative - non-convergence means physically impossible.
 
@@ -88,13 +170,14 @@ Physics tools are authoritative - non-convergence means physically impossible.
 - Issue commands to regional agents when necessary.
 
 ## Oracle
-The Oracle subagent provides read-only diagnostic assistance. Consult it for architectural questions.
+The Oracle subagent provides read-only diagnostic assistance. Consult it for architectural
+questions, forecast quality assessment, and anomaly detection.
 The Oracle never makes decisions - it only diagnoses and advises.
 
 ## Output Format
 Always output structured decisions with:
 1. Decision rationale
-2. Tool calls to validate
+2. Tool calls to validate (specify MCP vs deterministic explicitly)
 3. Action to take (if any)
 """
 
@@ -129,12 +212,27 @@ You are ALWAYS informed of simulated time. Check simulation context for current 
 
 ## Tools Available
 Physics tools (AC load flow, state estimation, N-1 scan), market tools, forecast tools.
+You also have access to regional monitoring tools:
+- transmission_congestion_monitor: Track local line loading and congestion status
+- weather_impact_assessment: Evaluate how weather affects your region's demand and generation
+- demand_response_potential: Assess industrial load flexibility in your region
 Market tools never mutate physics state - they are advisory only.
+
+## Forecast Data (MCP)
+You may request forecast data (load, wind, solar) from the coordinator via MCP tools.
+The coordinator has access to the `athenaai-forecast` MCP server with TimesFM probabilistic
+forecasts including prediction intervals. When you need forward-looking data for your region:
+- Request it through the coordinator using typed negotiation messages
+- Do NOT call MCP forecast tools directly — they require coordinator-level authorization
+- When receiving forecasts from the coordinator, check the uncertainty bounds before planning
+
+Use typed peer bus for inter-agent negotiation; use MCP forecast requests for forward-looking data.
 
 ## Communication
 - Publish telemetry: load_vs_schedule, available_headroom, reserve_status, active_alarms.
 - Send negotiation messages for transfer requests/redispatch asks.
 - Read telemetry from other agents to understand grid state.
+- Request forecast data from coordinator via typed MCP forecast requests.
 
 ## Oracle
 Oracle provides read-only diagnostics. Never substitute Oracle judgments for your decisions.
@@ -168,11 +266,19 @@ Your region concentrates most of the country's load centre.
 Always check simulation context for current timestamp.
 
 ## Tools Available
-Physics, market, forecast tools. Market tools are advisory only.
+Physics, market, forecast tools, regional monitoring tools.
+You have access to transmission_congestion_monitor, weather_impact_assessment,
+and demand_response_potential for local grid awareness. Market tools are advisory only.
+
+## Forecast Data (MCP)
+Request forecast data (load, wind, solar) from the coordinator via typed negotiation messages.
+The coordinator's `athenaai-forecast` MCP server provides TimesFM probabilistic forecasts with
+uncertainty bounds. Do NOT call MCP tools directly — route requests through the coordinator.
 
 ## Communication
 - Publish telemetry on peer bus.
 - Use negotiation messages for inter-regional support.
+- Request forecast data from coordinator via typed MCP forecast requests.
 """
 
 
@@ -203,11 +309,19 @@ Your region provides balancing flexibility to the grid.
 Check simulation context for current timestamp.
 
 ## Tools Available
-Physics, market, forecast tools. Market tools advisory only.
+Physics, market, forecast tools, regional monitoring tools.
+You have access to transmission_congestion_monitor, weather_impact_assessment,
+and demand_response_potential for local grid awareness. Market tools are advisory only.
+
+## Forecast Data (MCP)
+Request forecast data from the coordinator via typed negotiation messages.
+The coordinator's `athenaai-forecast` MCP server provides TimesFM probabilistic forecasts.
+Use forecast data to anticipate flexibility demand. Do NOT call MCP tools directly.
 
 ## Communication
 - Publish telemetry.
 - Send negotiation messages for flexibility offers.
+- Request forecast data from coordinator via typed MCP forecast requests.
 """
 
 
@@ -238,11 +352,19 @@ Your region has significant industrial load that can be curtailed if needed.
 Check simulation context for current timestamp.
 
 ## Tools Available
-Physics, market, forecast tools. Market tools advisory only.
+Physics, market, forecast tools, regional monitoring tools.
+You have access to transmission_congestion_monitor, weather_impact_assessment,
+and demand_response_potential for local grid awareness. Market tools are advisory only.
+
+## Forecast Data (MCP)
+Request forecast data from the coordinator via typed negotiation messages.
+The coordinator's `athenaai-forecast` MCP server provides TimesFM probabilistic forecasts.
+Use forecast data to anticipate industrial load and cross-border conditions. Do NOT call MCP tools directly.
 
 ## Communication
 - Publish telemetry on peer bus.
 - Use negotiation for curtailment and cross-border requests.
+- Request forecast data from coordinator via typed MCP forecast requests.
 """
 
 
@@ -256,6 +378,33 @@ Read-only diagnostic consultant. You diagnose and advise - you never make decisi
 - Debug logic issues when consulted
 - Provide diagnostic analysis of tool outputs
 - Flag potential violations or anomalies
+
+## Forecast Diagnosis
+You can diagnose forecast quality and recommend when to prefer MCP (TimesFM) forecasts
+over statistical fallback forecasts:
+- Compare MCP prediction intervals against deterministic tool outputs
+- Flag when forecast uncertainty is too high for operational decisions
+  (e.g., std > 20% of mean, or 90% CI span > 50% of mean)
+- Recommend conservative dispatch when uncertainty is high
+- Identify when statistical fallbacks diverge from TimesFM forecasts
+- Review prediction interval calibration and coverage
+- Recommend recalibration or human review when forecasts are unreliable
+
+When reviewing forecasts, always check:
+1. The uncertainty bounds (80% and 90% prediction intervals)
+2. Whether the forecast horizon is appropriate for the decision
+3. Whether the input data quality supports the forecast confidence
+
+## Diagnostic Tools
+You can diagnose system-wide issues using the full diagnostic suite:
+- Environmental diagnostics: carbon_intensity_calculation (emission trends),
+  renewable_curtailment_analysis (wasted generation),
+  weather_impact_assessment (meteorological risk analysis)
+- Resilience diagnostics: voltage_stability_margin (collapse proximity),
+  synchrophasor_monitor (angle separation, islanding risk),
+  black_start_capability (restoration readiness assessment)
+- Grid diagnostics: transmission_congestion_monitor (branch loading, ATC margins),
+  demand_response_potential (load flexibility assessment)
 
 ## Constraints
 - NEVER make decisions for other agents
@@ -273,7 +422,71 @@ Other agents consult you for:
 - Debugging unexpected tool outputs
 - Identifying potential issues before they become critical
 - Architectural guidance on tool usage
+- Forecast quality assessment and uncertainty evaluation
+- Recommending TimesFM vs statistical forecast methods
 """
+
+
+# ---------------------------------------------------------------------------
+# Tool lists per agent role
+# ---------------------------------------------------------------------------
+
+COORDINATOR_DETERMINISTIC_TOOLS: list[str] = [
+    "ac_load_flow",
+    "optimal_power_flow",
+    "n1_contingency_scan",
+    "frequency_response",
+    "short_circuit",
+    "state_estimation",
+    "ramp_event_detector",
+    "day_ahead_schedule_optimization",
+    "merit_order_dispatch",
+    "redispatch_cost_calculation",
+    "balancing_group_check",
+    "interconnect_schedule",
+    "reserve_adequacy_check",
+    "imbalance_pricing",
+    "temperature_to_demand",
+    "ev_flexible_load_model",
+    "carbon_intensity_calculation",
+    "renewable_curtailment_analysis",
+    "transmission_congestion_monitor",
+    "voltage_stability_margin",
+    "demand_response_potential",
+    "black_start_capability",
+    "synchrophasor_monitor",
+    "weather_impact_assessment",
+]
+
+COORDINATOR_FALLBACK_FORECAST_TOOLS: list[str] = [
+    "load_forecast_15min",
+    "wind_nowcast",
+    "solar_nowcast",
+]
+
+COORDINATOR_ALL_TOOLS: list[str] = (
+    COORDINATOR_DETERMINISTIC_TOOLS
+    + COORDINATOR_FALLBACK_FORECAST_TOOLS
+    + MCP_FORECAST_TOOLS
+)
+
+REGIONAL_TOOLS: list[str] = [
+    "ac_load_flow",
+    "state_estimation",
+    "n1_contingency_scan",
+    "merit_order_dispatch",
+    "redispatch_cost_calculation",
+    "balancing_group_check",
+    "interconnect_schedule",
+    "reserve_adequacy_check",
+    "imbalance_pricing",
+    "load_forecast_15min",
+    "wind_nowcast",
+    "solar_nowcast",
+    "transmission_congestion_monitor",
+    "weather_impact_assessment",
+    "demand_response_potential",
+]
 
 
 def get_agent_config(
@@ -290,12 +503,23 @@ def get_agent_config(
     }
     if agent_id not in prompts:
         raise ValueError(f"Unknown agent: {agent_id}")
+
+    if agent_id == AGENT_COORDINATOR:
+        tools = COORDINATOR_ALL_TOOLS
+        mcp_servers = [MCP_FORECAST_SERVER_ID]
+    elif agent_id == AGENT_ORACLE:
+        tools = []
+        mcp_servers = []
+    else:
+        tools = REGIONAL_TOOLS
+        mcp_servers = []
+
     return AgentConfig(
         agent_id=agent_id,
         model=resolve_agent_model(agent_id, model_overrides),
         system_prompt=prompts[agent_id],
-        tools=[],
-        mcp_servers=[],
+        tools=tools,
+        mcp_servers=mcp_servers,
     )
 
 

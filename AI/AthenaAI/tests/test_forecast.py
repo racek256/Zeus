@@ -5,14 +5,11 @@ from datetime import datetime
 from athenaai.forecast import TimesFMUnavailableError, apply_statistical_baseline
 
 
-class TestTimesFMUnavailable:
-    def test_timesfm_raises_when_unavailable(self):
-        try:
-            from athenaai.forecast import TimesFMWrapper
-            TimesFMWrapper()
-        except TimesFMUnavailableError:
-            return
-        raise AssertionError("Expected TimesFMUnavailableError when timesfm is unavailable")
+class TestTimesFMAvailable:
+    def test_timesfm_initializes_when_available(self):
+        from athenaai.forecast import TimesFMWrapper
+        wrapper = TimesFMWrapper()
+        assert wrapper.is_available is True
 
 
 class TestStatisticalBaselines:

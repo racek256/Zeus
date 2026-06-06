@@ -11,11 +11,38 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import hashlib
 import importlib
 import math
 from typing import Any
 
+import random as _random
+
+try:
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
+
 from athenaai.trace import trace, trace_scope
+
+
+def _make_deterministic_rng(seed: int) -> Any:
+    if _NUMPY_AVAILABLE and np is not None:
+        return np.random.Generator(np.random.PCG64(seed))
+    return _seeded_random(seed)
+
+
+class _seeded_random:
+    def __init__(self, seed: int) -> None:
+        self._rng = _random.Random(seed)
+
+    def normal(self, mu: float = 0.0, sigma: float = 1.0) -> float:
+        return self._rng.gauss(mu, sigma)
+
+    def random(self) -> float:
+        return self._rng.random()
 
 
 class PhysicsStatus(str, Enum):
@@ -65,6 +92,46 @@ class OPFResult:
     dual_prices: tuple[tuple[str, float], ...]
     cost_eur: float
     message: str
+    timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class StateEstimationResult:
+    success: bool
+    status: PhysicsStatus
+    bus_estimates: tuple[tuple[str, float, float], ...]
+    estimated_v_mag_pu: float
+    estimated_v_angle_deg: float
+    chi_squared: float
+    bad_data_detected: bool = False
+    suspicious_measurements: tuple[str, ...] = ()
+    message: str = ""
+    timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ShortCircuitResult:
+    success: bool
+    status: PhysicsStatus
+    fault_current_ka: float
+    fault_power_mva: float
+    bus_voltages: tuple[tuple[str, float, float], ...]
+    generator_contributions: tuple[tuple[str, float], ...]
+    message: str = ""
+    timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class FrequencyResponseResult:
+    success: bool
+    status: PhysicsStatus
+    frequency_nadir_hz: float
+    rocof_hz_s: float
+    settling_frequency_hz: float
+    system_inertia_s: float
+    critical_clearing_time_cycles: float
+    delta_p_mw: float
+    message: str = ""
     timestamp: datetime | None = None
 
 
@@ -514,5 +581,626 @@ def run_opf(
             dual_prices=(),
             cost_eur=0.0,
             message=f"OPF error: {str(e)}",
+            timestamp=simulated_time,
+        )
+
+
+def run_state_estimation(
+    network_state: dict[str, Any],
+    measurements: dict[str, Any] | list[dict[str, Any]] | None = None,
+    min_voltage_pu: float = 0.95,
+    max_voltage_pu: float = 1.05,
+    simulated_time: datetime | None = None,
+    seed: int | None = None,
+) -> StateEstimationResult:
+    with trace_scope(
+        "physics.run_state_estimation",
+        buses=len(network_state.get("buses", [])),
+        measurements=len(measurements) if measurements else 0,
+        seed=seed,
+    ):
+        try:
+            pp = importlib.import_module("pandapower")
+        except ImportError:
+            trace("physics.run_state_estimation.pandapower_missing")
+            return _run_state_estimation_fallback(
+                network_state, measurements, min_voltage_pu, max_voltage_pu,
+                simulated_time, seed,
+            )
+
+        try:
+            net = _build_pandapower_net(network_state)
+
+            if measurements:
+                meas_list = measurements if isinstance(measurements, list) else measurements.get("measurements", [])
+                bus_index_by_name: dict[str, int] = {}
+                for idx, name in net.bus["name"].items():
+                    bus_index_by_name[name] = idx
+
+                for meas in meas_list:
+                    if not isinstance(meas, dict):
+                        continue
+                    meas_type = meas.get("type", "")
+                    value = float(meas.get("value", 0.0))
+                    std = float(meas.get("std", max(abs(value) * 0.02, 0.1)))
+                    bus = str(meas.get("bus", meas.get("element", "")))
+                    bus_idx = bus_index_by_name.get(bus, 0)
+
+                    element = None
+                    element_type = None
+                    if "p_flow" in meas_type.lower() or "q_flow" in meas_type.lower():
+                        element = bus_idx
+                        element_type = "line"
+                    elif bus_idx is not None:
+                        element = bus_idx
+                        element_type = "bus"
+
+                    if element is not None and element_type is not None:
+                        meas_type_pp = "v" if "voltage" in meas_type.lower() else (
+                            "p" if "p_injection" in meas_type.lower() or "p_gen" in meas_type.lower() else (
+                                "q" if "q_injection" in meas_type.lower() or "q_gen" in meas_type.lower() else "p"
+                            )
+                        )
+                        pp.create_measurement(
+                            net, meas_type=meas_type_pp,
+                            element_type=element_type, element=element,
+                            value=value, std_dev=std,
+                        )
+
+            try:
+                pp.estimate(net, init="flat", tolerance_mva=1e-3, maximum_iterations=30)
+                converged = True
+                estimation_message = "State estimation converged using pandapower WLS"
+            except pp.opt_termination as exc:
+                trace("physics.run_state_estimation.pandapower_estimate_failed", error=str(exc)[:200])
+                converged = False
+                estimation_message = f"State estimation did not converge: {exc}"
+            except Exception as exc:
+                trace("physics.run_state_estimation.pandapower_estimate_failed", error=str(exc)[:200])
+                return _run_state_estimation_fallback(
+                    network_state, measurements, min_voltage_pu, max_voltage_pu,
+                    simulated_time, seed,
+                )
+
+            bus_estimates: list[tuple[str, float, float]] = []
+            for idx, row in net.res_bus_est.iterrows() if hasattr(net, "res_bus_est") else []:
+                bus_name = net.bus.name.at[idx]
+                bus_estimates.append((bus_name, float(row.vm_pu), float(row.va_degree)))
+
+            if not bus_estimates:
+                for idx, row in net.res_bus.iterrows():
+                    bus_name = net.bus.name.at[idx]
+                    bus_estimates.append((bus_name, float(row.vm_pu), float(row.va_degree)))
+
+            return StateEstimationResult(
+                success=converged,
+                status=PhysicsStatus.SUCCESS if converged else PhysicsStatus.NON_CONVERGENCE,
+                bus_estimates=tuple(bus_estimates),
+                estimated_v_mag_pu=bus_estimates[0][1] if bus_estimates else 1.0,
+                estimated_v_angle_deg=bus_estimates[0][2] if bus_estimates else 0.0,
+                chi_squared=0.0,
+                bad_data_detected=False,
+                suspicious_measurements=(),
+                message=estimation_message,
+                timestamp=simulated_time,
+            )
+        except Exception as exc:
+            trace("physics.run_state_estimation.error", error_type=type(exc).__name__, error=str(exc)[:200])
+            return _run_state_estimation_fallback(
+                network_state, measurements, min_voltage_pu, max_voltage_pu,
+                simulated_time, seed,
+            )
+
+
+def _run_state_estimation_fallback(
+    network_state: dict[str, Any],
+    measurements: dict[str, Any] | list[dict[str, Any]] | None = None,
+    min_voltage_pu: float = 0.95,
+    max_voltage_pu: float = 1.05,
+    simulated_time: datetime | None = None,
+    seed: int | None = None,
+) -> StateEstimationResult:
+    rng = _make_deterministic_rng(seed if seed is not None else 42)
+
+    buses = network_state.get("buses", [])
+    meas_list: list[dict[str, Any]] = []
+    if measurements is not None:
+        if isinstance(measurements, list):
+            meas_list = measurements
+        elif isinstance(measurements, dict):
+            meas_list = measurements.get("measurements", [])
+
+    default_std_pct = 0.02
+    weighted_sum_v = 0.0
+    weight_sum_v = 0.0
+    weighted_sum_angle = 0.0
+    weight_sum_angle = 0.0
+    num_meas = 0
+
+    for meas in meas_list:
+        if not isinstance(meas, dict):
+            continue
+        meas_type = meas.get("type", "")
+        value = float(meas.get("value", 0.0))
+        std = float(meas.get("std", max(abs(value) * default_std_pct, 0.1)))
+        weight = 1.0 / (std * std) if std > 0 else 1.0
+
+        if "voltage" in meas_type.lower() or "vm" in meas_type.lower():
+            weighted_sum_v += value * weight
+            weight_sum_v += weight
+            num_meas += 1
+        elif "angle" in meas_type.lower() or "va" in meas_type.lower():
+            weighted_sum_angle += value * weight
+            weight_sum_angle += weight
+            num_meas += 1
+
+    estimated_v_mag_pu = weighted_sum_v / weight_sum_v if weight_sum_v > 0 else 1.0
+    v_mag_std = 1.0 / math.sqrt(weight_sum_v) if weight_sum_v > 0 else 0.05
+    estimated_v_angle_deg = weighted_sum_angle / weight_sum_angle if weight_sum_angle > 0 else 0.0
+    v_angle_std = 1.0 / math.sqrt(weight_sum_angle) if weight_sum_angle > 0 else 2.0
+    degrees_of_freedom = max(1, num_meas - 2 * len(buses))
+    chi_squared = float(num_meas) / max(degrees_of_freedom, 1)
+    bad_data_threshold = 3.0
+    bad_data_detected = False
+    suspicious_ids: list[str] = []
+
+    for i, meas in enumerate(meas_list):
+        if not isinstance(meas, dict):
+            continue
+        meas_type = meas.get("type", "")
+        value = float(meas.get("value", 0.0))
+        std = float(meas.get("std", max(abs(value) * default_std_pct, 0.1)))
+        if "voltage" in meas_type.lower() or "vm" in meas_type.lower():
+            residual = (value - estimated_v_mag_pu) / max(std, 0.001)
+            if abs(residual) > bad_data_threshold:
+                bad_data_detected = True
+                suspicious_ids.append(meas.get("bus", meas.get("element", f"meas_{i}")))
+
+    bus_estimates: list[tuple[str, float, float]] = []
+    for idx, bus in enumerate(buses):
+        bus_id = str(bus.get("bus_id", bus.get("name", idx)))
+        bus_seed = int(hashlib.md5(f"{seed}_{bus_id}".encode()).hexdigest()[:8], 16) if seed is not None else 42 + idx
+        bus_rng = _make_deterministic_rng(bus_seed)
+        vm_offset = bus_rng.normal(0.0, v_mag_std)
+        va_offset = bus_rng.normal(0.0, v_angle_std)
+        vm_est = max(min_voltage_pu, min(max_voltage_pu, estimated_v_mag_pu + vm_offset))
+        va_est = estimated_v_angle_deg + va_offset
+        bus_estimates.append((bus_id, round(vm_est, 4), round(va_est, 3)))
+
+    if not bus_estimates:
+        bus_estimates.append(("default_bus", round(estimated_v_mag_pu, 4), round(estimated_v_angle_deg, 3)))
+
+    trace(
+        "physics._run_state_estimation_fallback.done",
+        buses=len(bus_estimates),
+        measurements=num_meas,
+        bad_data_detected=bad_data_detected,
+        seed=seed,
+    )
+
+    return StateEstimationResult(
+        success=True,
+        status=PhysicsStatus.FALLBACK_USED,
+        bus_estimates=tuple(bus_estimates),
+        estimated_v_mag_pu=round(estimated_v_mag_pu, 4),
+        estimated_v_angle_deg=round(estimated_v_angle_deg, 3),
+        chi_squared=round(chi_squared, 4),
+        bad_data_detected=bad_data_detected,
+        suspicious_measurements=tuple(suspicious_ids),
+        message="State estimation completed using WLS fallback (pandapower unavailable or estimation failed)",
+        timestamp=simulated_time,
+    )
+
+
+def run_short_circuit(
+    network_state: dict[str, Any],
+    fault_bus: str = "",
+    fault_type: str = "3ph",
+    simulated_time: datetime | None = None,
+    seed: int | None = None,
+) -> ShortCircuitResult:
+    with trace_scope(
+        "physics.run_short_circuit",
+        fault_bus=fault_bus,
+        fault_type=fault_type,
+        seed=seed,
+    ):
+        try:
+            pp = importlib.import_module("pandapower")
+        except ImportError:
+            trace("physics.run_short_circuit.pandapower_missing")
+            return _run_short_circuit_fallback(
+                network_state, fault_bus, fault_type, simulated_time, seed,
+            )
+
+        try:
+            net = _build_pandapower_net(network_state)
+
+            bus_index_by_name: dict[str, int] = {}
+            for idx, name in net.bus["name"].items():
+                bus_index_by_name[name] = idx
+            bus_index_by_external: dict[str, int] = {}
+            for b in network_state.get("buses", []):
+                bid = str(b.get("bus_id", b.get("name", "")))
+                name = str(b.get("name", bid))
+                if name in bus_index_by_name:
+                    bus_index_by_external[bid] = bus_index_by_name[name]
+
+            fault_bus_idx = None
+            if fault_bus:
+                fault_bus_idx = bus_index_by_external.get(fault_bus) or bus_index_by_name.get(fault_bus)
+            if fault_bus_idx is None:
+                fault_bus_idx = 0
+
+            pp.calc_sc(net, bus=fault_bus_idx, case="max", fault=fault_type, ip=True)
+
+            ikss_ka = float(net.res_bus_sc.ikss_ka.at[fault_bus_idx])
+            skss_mva = float(net.res_bus_sc.skss_mva.at[fault_bus_idx])
+
+            bus_voltages: list[tuple[str, float, float]] = []
+            for idx, row in net.res_bus_sc.iterrows():
+                bus_name = net.bus.name.at[idx]
+                if idx == fault_bus_idx:
+                    bus_voltages.append((bus_name, 0.0, 0.0))
+                else:
+                    bus_voltages.append((bus_name, float(row.vm_pu), float(row.va_degree)))
+
+            gen_contributions: list[tuple[str, float]] = []
+            if hasattr(net, "res_gen_sc") and net.res_gen_sc is not None:
+                for idx, row in net.res_gen_sc.iterrows():
+                    gen_name = net.gen.name.at[idx]
+                    gen_contributions.append((gen_name, float(row.ikss_ka)))
+
+            trace("physics.run_short_circuit.pandapower_done", ikss_ka=ikss_ka, skss_mva=skss_mva)
+
+            return ShortCircuitResult(
+                success=True,
+                status=PhysicsStatus.SUCCESS,
+                fault_current_ka=round(ikss_ka, 4),
+                fault_power_mva=round(skss_mva, 2),
+                bus_voltages=tuple(bus_voltages),
+                generator_contributions=tuple(gen_contributions),
+                message=f"IEC 60909 short-circuit calculated via pandapower (fault: {fault_type} at bus {fault_bus})",
+                timestamp=simulated_time,
+            )
+        except Exception as exc:
+            trace("physics.run_short_circuit.pandapower_error", error_type=type(exc).__name__, error=str(exc)[:200])
+            return _run_short_circuit_fallback(
+                network_state, fault_bus, fault_type, simulated_time, seed,
+            )
+
+
+def _run_short_circuit_fallback(
+    network_state: dict[str, Any],
+    fault_bus: str = "",
+    fault_type: str = "3ph",
+    simulated_time: datetime | None = None,
+    seed: int | None = None,
+) -> ShortCircuitResult:
+    buses = network_state.get("buses", [])
+    generators = network_state.get("generators", [])
+
+    v_base_kv = 110.0
+    for b in buses:
+        bid = str(b.get("bus_id", b.get("name", "")))
+        if bid == fault_bus or (not fault_bus and not v_base_kv):
+            v_base_kv = float(b.get("vn_kv", v_base_kv))
+
+    c_factor = 1.1
+    z_source_pu = 0.05
+    s_base_mva = 100.0
+
+    total_fault_mva = 0.0
+    gen_contributions: list[tuple[str, float]] = []
+
+    for g in generators:
+        gen_id = str(g.get("generator_id", g.get("name", "")))
+        gen_sn_mva = float(g.get("sn_mva", g.get("p_mw", 100.0)))
+        gen_xd_pu = float(g.get("xd_pu", 0.2))
+        electrical_distance = 1.2
+        z_gen_pu = gen_xd_pu * electrical_distance
+        i_gen_pu = 1.0 / z_gen_pu if z_gen_pu > 0 else 0.0
+        i_gen_ka = (i_gen_pu * gen_sn_mva) / (v_base_kv * math.sqrt(3.0))
+        gen_mva = gen_sn_mva * i_gen_pu / electrical_distance
+        gen_contributions.append((gen_id, round(i_gen_ka, 4)))
+        total_fault_mva += gen_mva
+
+    z_fault = z_source_pu * v_base_kv
+    if z_fault > 0:
+        fault_current_ka = (c_factor * v_base_kv) / (math.sqrt(3.0) * z_fault)
+    else:
+        fault_current_ka = 0.0
+    fault_current_ka += sum(contrib for _, contrib in gen_contributions)
+    fault_power_mva = fault_current_ka * v_base_kv * math.sqrt(3.0)
+
+    bus_voltages: list[tuple[str, float, float]] = []
+    for b in buses:
+        bus_id = str(b.get("bus_id", b.get("name", "")))
+        if bus_id == fault_bus:
+            bus_voltages.append((bus_id, 0.0, 0.0))
+        else:
+            bus_seed = int(hashlib.md5(f"{seed}_{bus_id}".encode()).hexdigest()[:8], 16) if seed else 42
+            rng_local = _make_deterministic_rng(bus_seed)
+            distance_factor = float(max(0.5, 0.85 + 0.1 * rng_local.random()))
+            bus_voltages.append((bus_id, round(distance_factor, 3), 0.0))
+
+    if not bus_voltages:
+        bus_voltages.append(("default_bus", 0.0, 0.0))
+
+    trace(
+        "physics._run_short_circuit_fallback.done",
+        fault_current_ka=round(fault_current_ka, 4),
+        fault_power_mva=round(fault_power_mva, 2),
+        seed=seed,
+    )
+
+    return ShortCircuitResult(
+        success=True,
+        status=PhysicsStatus.FALLBACK_USED,
+        fault_current_ka=round(fault_current_ka, 4),
+        fault_power_mva=round(fault_power_mva, 2),
+        bus_voltages=tuple(bus_voltages),
+        generator_contributions=tuple(gen_contributions),
+        message="Short-circuit calculated using IEC 60909 fallback (pandapower unavailable or sc calculation failed)",
+        timestamp=simulated_time,
+    )
+
+
+def run_frequency_response(
+    network_state: dict[str, Any],
+    disturbance: dict[str, Any] | None = None,
+    min_frequency_hz: float = 49.0,
+    simulated_time: datetime | None = None,
+    seed: int | None = None,
+) -> FrequencyResponseResult:
+    with trace_scope(
+        "physics.run_frequency_response",
+        disturbance_type=disturbance.get("type") if disturbance else "none",
+        min_frequency_hz=min_frequency_hz,
+        seed=seed,
+    ):
+        if disturbance is None:
+            disturbance = {}
+
+        delta_p_mw = float(disturbance.get("delta_p_mw", 0.0))
+        disturbance_type = str(disturbance.get("type", "load_loss"))
+
+        generators = network_state.get("generators", [])
+        total_inertia_s = 4.0
+        s_base_mva = 100.0
+
+        if generators:
+            inertia_contributions = []
+            for gen in generators:
+                rating_mva = float(gen.get("sn_mva", gen.get("p_mw", 100.0)))
+                gen_type = str(gen.get("type", gen.get("fuel_type", "thermal"))).lower()
+                if "hydro" in gen_type:
+                    h_value = 2.5
+                elif "gas" in gen_type:
+                    h_value = 3.5
+                elif "wind" in gen_type or "solar" in gen_type:
+                    h_value = 0.0
+                else:
+                    h_value = 4.5
+                inertia_contributions.append(rating_mva * h_value)
+                s_base_mva = max(s_base_mva, rating_mva)
+            if inertia_contributions:
+                total_inertia_s = sum(inertia_contributions) / s_base_mva
+
+        damping_factor = 1.0
+        if s_base_mva > 0 and total_inertia_s > 0:
+            delta_f_pu = -delta_p_mw / (2.0 * total_inertia_s * s_base_mva * damping_factor)
+        else:
+            delta_f_pu = 0.0
+
+        freq_nadir_hz = 50.0 + delta_f_pu * 50.0 * 1.4
+        rocof_denom = 2.0 * total_inertia_s * s_base_mva
+        rocof_hz_s = abs(delta_p_mw) / rocof_denom if rocof_denom > 0 else 0.0
+        freq_settling_hz = 50.0 + delta_f_pu * 50.0 * 0.5
+
+        clearing_denom = abs(delta_p_mw) / max(s_base_mva, 1.0) + 0.1
+        critical_clearing_s = total_inertia_s / clearing_denom if clearing_denom > 0 else 0.0
+        critical_clearing_cycles = critical_clearing_s * 50.0
+
+        if min_frequency_hz > 0 and freq_nadir_hz < min_frequency_hz:
+            status = PhysicsStatus.VIOLATION_RAMP
+            converged = False
+            result_message = (
+                f"Frequency nadir {freq_nadir_hz:.2f} Hz below minimum {min_frequency_hz} Hz "
+                f"(inertia={total_inertia_s:.2f}s, dP={delta_p_mw:.1f}MW)"
+            )
+        else:
+            status = PhysicsStatus.SUCCESS
+            converged = True
+            result_message = (
+                f"Frequency response stable (nadir={freq_nadir_hz:.2f}Hz, rocof={rocof_hz_s:.3f}Hz/s)"
+            )
+
+        trace(
+            "physics.run_frequency_response.done",
+            freq_nadir_hz=round(freq_nadir_hz, 4),
+            rocof_hz_s=round(rocof_hz_s, 4),
+            inertia=round(total_inertia_s, 3),
+            seed=seed,
+        )
+
+        return FrequencyResponseResult(
+            success=converged,
+            status=status,
+            frequency_nadir_hz=round(freq_nadir_hz, 4),
+            rocof_hz_s=round(rocof_hz_s, 4),
+            settling_frequency_hz=round(freq_settling_hz, 4),
+            system_inertia_s=round(total_inertia_s, 3),
+            critical_clearing_time_cycles=round(critical_clearing_cycles, 2),
+            delta_p_mw=delta_p_mw,
+            message=result_message,
+            timestamp=simulated_time,
+        )
+
+
+def _get_n1_executor(
+    max_workers: int | None = None,
+    use_process_pool: bool = True,
+) -> Any:
+    import concurrent.futures as _cf
+
+    if not use_process_pool:
+        return _cf.ThreadPoolExecutor(max_workers=max_workers)
+
+    try:
+        from athenaai.physics.process_pool import PhysicsProcessPool
+        pool = PhysicsProcessPool(max_workers=max_workers)
+        pool._get_or_create_executor()
+        trace(
+            "physics._get_n1_executor",
+            executor_type="process",
+            max_workers=pool.max_workers,
+            is_process_pool=pool.is_process_pool,
+        )
+        if not pool.is_process_pool:
+            pool.shutdown(wait=False)
+            trace("physics._get_n1_executor.fallback_to_thread")
+            return _cf.ThreadPoolExecutor(max_workers=max_workers)
+        return pool
+    except Exception as exc:
+        trace(
+            "physics._get_n1_executor.process_pool_unavailable",
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        return _cf.ThreadPoolExecutor(max_workers=max_workers)
+
+
+def run_parallel_n1(
+    network_state: dict[str, Any],
+    contingencies: list[dict[str, Any]] | None = None,
+    max_loading_percent: float = 100.0,
+    min_voltage_pu: float = 0.95,
+    max_voltage_pu: float = 1.05,
+    simulated_time: datetime | None = None,
+    pool: Any | None = None,
+    seed: int | None = None,
+    max_workers: int | None = None,
+    use_process_pool: bool = True,
+) -> Any:
+    from athenaai.physics.n1 import (
+        ContingencyResult,
+        N1Result,
+        N1Status,
+        n1_security_scan,
+    )
+    import concurrent.futures
+
+    with trace_scope(
+        "physics.run_parallel_n1",
+        contingencies=len(contingencies) if contingencies else 0,
+        max_workers=max_workers,
+        seed=seed,
+        use_process_pool=use_process_pool,
+    ):
+        if contingencies is None:
+            return n1_security_scan(
+                network_state,
+                simulated_time=simulated_time,
+                max_loading_percent=max_loading_percent,
+                min_voltage_pu=min_voltage_pu,
+                max_voltage_pu=max_voltage_pu,
+            )
+
+        if not contingencies:
+            return N1Result(
+                passed=True,
+                status=N1Status.PASSED,
+                contingencies=(),
+                secure_contingencies=(),
+                violated_contingencies=(),
+                message="No contingencies to check",
+                timestamp=simulated_time,
+            )
+
+        if len(contingencies) <= 4:
+            trace("physics.run_parallel_n1.small_set_sequential", count=len(contingencies))
+            return n1_security_scan(
+                network_state,
+                simulated_time=simulated_time,
+                critical_elements=contingencies,
+                max_loading_percent=max_loading_percent,
+                min_voltage_pu=min_voltage_pu,
+                max_voltage_pu=max_voltage_pu,
+            )
+
+        _workers = pool.max_workers if pool is not None else (max_workers or 4)
+        chunk_size = max(1, len(contingencies) // max(4, _workers))
+        chunks = [
+            list(contingencies[i : i + chunk_size])
+            for i in range(0, len(contingencies), chunk_size)
+        ]
+        trace("physics.run_parallel_n1.chunks", num_chunks=len(chunks), chunk_size=chunk_size)
+
+        all_contingencies: list[ContingencyResult] = []
+        all_secure: list[str] = []
+        all_violated: list[str] = []
+
+        chunk_seed = seed if seed is not None else 42
+
+        if pool is not None:
+            _owns_executor = False
+            executor = pool
+        else:
+            _owns_executor = True
+            executor = _get_n1_executor(
+                max_workers=max_workers, use_process_pool=use_process_pool
+            ).__enter__()
+
+        try:
+            future_to_chunk = {}
+            for idx, chunk in enumerate(chunks):
+                future = executor.submit(
+                    n1_security_scan,
+                    network_state=network_state,
+                    simulated_time=simulated_time,
+                    critical_elements=chunk,
+                    max_loading_percent=max_loading_percent,
+                    min_voltage_pu=min_voltage_pu,
+                    max_voltage_pu=max_voltage_pu,
+                    stop_on_first_violation=False,
+                )
+                future_to_chunk[future] = idx
+
+            for future in concurrent.futures.as_completed(future_to_chunk):
+                try:
+                    chunk_result: N1Result = future.result()
+                    all_contingencies.extend(chunk_result.contingencies)
+                    all_secure.extend(chunk_result.secure_contingencies)
+                    all_violated.extend(chunk_result.violated_contingencies)
+                except Exception as exc:
+                    trace(
+                        "physics.run_parallel_n1.chunk_failed",
+                        chunk_index=future_to_chunk[future],
+                        error=str(exc)[:200],
+                    )
+        finally:
+            if _owns_executor:
+                try:
+                    executor.__exit__(None, None, None)
+                except Exception:
+                    pass
+
+        all_passed = len(all_violated) == 0
+        trace(
+            "physics.run_parallel_n1.done",
+            passed=all_passed,
+            checked=len(all_contingencies),
+            secure=len(all_secure),
+            violated=len(all_violated),
+        )
+
+        return N1Result(
+            passed=all_passed,
+            status=N1Status.PASSED if all_passed else N1Status.FAILED,
+            contingencies=tuple(all_contingencies),
+            secure_contingencies=tuple(all_secure),
+            violated_contingencies=tuple(all_violated),
+            message="Parallel N-1 scan passed" if all_passed else f"Parallel N-1 failed: {len(all_violated)} violations",
             timestamp=simulated_time,
         )

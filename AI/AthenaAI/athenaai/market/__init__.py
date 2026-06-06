@@ -19,6 +19,15 @@ from athenaai.market.advisory import (
     calculate_reserve_adequacy,
     merit_order_dispatch,
 )
+from athenaai.market.cost_curves import (
+    CostCurveCalculator,
+    CostCurveResult,
+    GeneratorCost,
+)
+from athenaai.market.data_loader import (
+    MarketDataLoader,
+    MarketDataSnapshot,
+)
 
 __all__ = [
     "merit_order_dispatch",
@@ -33,4 +42,9 @@ __all__ = [
     "ReserveAdequacyResult",
     "calculate_imbalance_pricing",
     "ImbalancePricingResult",
+    "CostCurveCalculator",
+    "CostCurveResult",
+    "GeneratorCost",
+    "MarketDataLoader",
+    "MarketDataSnapshot",
 ]

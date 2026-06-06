@@ -106,6 +106,24 @@ ALL_AGENTS: list[str] = [AGENT_COORDINATOR] + REGIONAL_AGENTS + [AGENT_ORACLE]
 
 
 # =============================================================================
+# MCP Forecast Server Configuration
+# =============================================================================
+
+# MCP server identifier for TimesFM forecast tools.
+# Registered in opencode.jsonc under mcp.athenaai-forecast.
+MCP_FORECAST_SERVER_ID: Final[str] = "athenaai-forecast"
+
+# MCP forecast tools exposed by the TimesFM forecast MCP server.
+# These are probabilistic ML forecasts (predictions with uncertainty).
+# Contrast with the deterministic tools in physics.py which are
+# statistical fallbacks for when MCP is unavailable.
+MCP_FORECAST_TOOLS: list[str] = [
+    "forecast_load",
+    "forecast_wind",
+    "forecast_solar",
+]
+
+# =============================================================================
 # Simulation Configuration
 # =============================================================================
 
