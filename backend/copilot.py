@@ -155,6 +155,7 @@ class HourResult:
     n1_failed: bool
     step_failed: bool
     evaluation_results: list[dict[str, Any]]
+    retried: bool = False
 
 
 @dataclass
@@ -170,6 +171,7 @@ class SimulationRun:
     n1_failed_hours: list[int]
     replay_coverage_percent: float
     hours: list[HourResult]
+    retried_hours: list[int] = field(default_factory=list)
     started_at: str | None = None
     finished_at: str | None = None
     error: str | None = None
@@ -271,6 +273,68 @@ async def _run_sim_async(
                         "updated_at": datetime.now().isoformat(),
                     }
 
+        def _build_hour_result(hour_result: dict[str, Any], retried: bool = False) -> HourResult:
+            proposals = []
+            for action in hour_result.get("actions", []):
+                if action.get("load_shedding", 0) > 0 or action.get("redispatch", 0) > 0:
+                    proposal = {
+                        "proposal_id": f"p-{hour_result['hour_index']}-{action['agent_id']}-{len(_state.proposals)}",
+                        "hour_index": hour_result["hour_index"],
+                        "agent_id": action["agent_id"],
+                        "action": action,
+                        "timestamp": hour_result["timestamp"],
+                        "status": "auto-executed",
+                    }
+                    proposals.append(proposal)
+                    _state.proposals.append(proposal)
+            
+            n1_passed = hour_result.get("n1_passed")
+            n1_violations = hour_result.get("n1_violations", [])
+            n1_detail = None if n1_passed is None else {
+                "passed": n1_passed,
+                "status": "passed" if n1_passed else "failed",
+                "message": "N-1 scan " + ("passed" if n1_passed else "failed"),
+                "contingencies_tested": len(n1_violations),
+                "violated_contingencies": n1_violations,
+            }
+
+            return HourResult(
+                hour_index=hour_result["hour_index"],
+                timestamp=hour_result["timestamp"],
+                observation=hour_result.get("observation", {
+                    "hour_index": hour_result["hour_index"],
+                    "timestamp": hour_result["timestamp"],
+                    "total_generation_mw": 0,
+                    "total_load_mw": 0,
+                    "imbalance_mw": 0,
+                    "system_frequency_hz": 50.0,
+                    "num_generators": 0,
+                    "num_loads": 0,
+                    "num_buses": 0,
+                    "num_branches": 0,
+                    "has_violations": False,
+                    "market_price_eur_mwh": 0,
+                }),
+                agent_outputs=[
+                    {
+                        "agent_id": a["agent_id"],
+                        "reasoning": a.get("reasoning", "Monitoring"),
+                        "has_action": a.get("load_shedding", 0) > 0 or a.get("redispatch", 0) > 0,
+                        "model": a.get("model", "deterministic"),
+                    }
+                    for a in hour_result.get("actions", [])
+                ],
+                proposals=proposals,
+                actions_executed=len(hour_result.get("actions", [])),
+                actions_accepted=sum(1 for a in hour_result.get("actions", []) if a.get("agent_id")),
+                n1_passed=n1_passed,
+                n1_detail=n1_detail,
+                n1_failed=n1_passed is False,
+                step_failed=hour_result["status"] == "failed",
+                evaluation_results=_jsonable(hour_result.get("evaluation_results", [])),
+                retried=retried,
+            )
+
         def progress_callback(hour_result: dict[str, Any]) -> None:
             with _state.lock:
                 run.current_hour = hour_result["hour_index"]
@@ -278,116 +342,98 @@ async def _run_sim_async(
                 run.phase_detail = f"Hour {hour_result['hour_index']} completed"
                 run.active_agent = None
                 
-                proposals = []
-                for action in hour_result.get("actions", []):
-                    if action.get("load_shedding", 0) > 0 or action.get("redispatch", 0) > 0:
-                        proposal = {
-                            "proposal_id": f"p-{hour_result['hour_index']}-{action['agent_id']}-{len(_state.proposals)}",
-                            "hour_index": hour_result["hour_index"],
-                            "agent_id": action["agent_id"],
-                            "action": action,
-                            "timestamp": hour_result["timestamp"],
-                            "status": "auto-executed",
-                        }
-                        proposals.append(proposal)
-                        _state.proposals.append(proposal)
+                existing_idx = None
+                for i, h in enumerate(run.hours):
+                    if h.hour_index == hour_result["hour_index"]:
+                        existing_idx = i
+                        break
                 
-                n1_passed = hour_result.get("n1_passed")
-                n1_violations = hour_result.get("n1_violations", [])
-                n1_detail = None if n1_passed is None else {
-                    "passed": n1_passed,
-                    "status": "passed" if n1_passed else "failed",
-                    "message": "N-1 scan " + ("passed" if n1_passed else "failed"),
-                    "contingencies_tested": len(n1_violations),
-                    "violated_contingencies": n1_violations,
-                }
-
-                hr = HourResult(
-                    hour_index=hour_result["hour_index"],
-                    timestamp=hour_result["timestamp"],
-                    observation=hour_result.get("observation", {
-                        "hour_index": hour_result["hour_index"],
-                        "timestamp": hour_result["timestamp"],
-                        "total_generation_mw": 0,
-                        "total_load_mw": 0,
-                        "imbalance_mw": 0,
-                        "system_frequency_hz": 50.0,
-                        "num_generators": 0,
-                        "num_loads": 0,
-                        "num_buses": 0,
-                        "num_branches": 0,
-                        "has_violations": False,
-                        "market_price_eur_mwh": 0,
-                    }),
-                    agent_outputs=[
-                        {
-                            "agent_id": a["agent_id"],
-                            "reasoning": a.get("reasoning", "Monitoring"),
-                            "has_action": a.get("load_shedding", 0) > 0 or a.get("redispatch", 0) > 0,
-                            "model": a.get("model", "deterministic"),
-                        }
-                        for a in hour_result.get("actions", [])
-                    ],
-                    proposals=proposals,
-                    actions_executed=len(hour_result.get("actions", [])),
-                    actions_accepted=sum(1 for a in hour_result.get("actions", []) if a.get("agent_id")),
-                    n1_passed=n1_passed,
-                    n1_detail=n1_detail,
-                    n1_failed=n1_passed is False,
-                    step_failed=hour_result["status"] == "failed",
-                    evaluation_results=_jsonable(hour_result.get("evaluation_results", [])),
-                )
+                is_retry = existing_idx is not None
+                hr = _build_hour_result(hour_result, retried=is_retry)
                 
-                run.hours.append(hr)
+                if is_retry:
+                    run.hours[existing_idx] = hr
+                    if hour_result["hour_index"] not in run.retried_hours:
+                        run.retried_hours.append(hour_result["hour_index"])
+                else:
+                    run.hours.append(hr)
+                
                 run.completed_hours = len(run.hours)
                 
                 if hour_result["status"] == "failed":
-                    run.failed_hours.append(hour_result["hour_index"])
+                    if hour_result["hour_index"] not in run.failed_hours:
+                        run.failed_hours.append(hour_result["hour_index"])
+                else:
+                    if hour_result["hour_index"] in run.failed_hours:
+                        run.failed_hours.remove(hour_result["hour_index"])
+                
                 if n1_passed is False:
-                    run.n1_failed_hours.append(hour_result["hour_index"])
+                    if hour_result["hour_index"] not in run.n1_failed_hours:
+                        run.n1_failed_hours.append(hour_result["hour_index"])
+                else:
+                    if hour_result["hour_index"] in run.n1_failed_hours:
+                        run.n1_failed_hours.remove(hour_result["hour_index"])
 
         final_hour_results: list[dict[str, Any]] = []
         final_result: dict[str, Any] | None = None
-        for attempt in range(1, _API_AGENT_ATTEMPTS + 1):
-            attempt_hour_results: list[dict[str, Any]] = []
-
-            def attempt_progress_callback(hour_result: dict[str, Any]) -> None:
-                attempt_hour_results.append(hour_result)
-                progress_callback(hour_result)
-
-            def attempt_phase_callback(event: dict[str, Any]) -> None:
-                updated = dict(event)
-                message = str(updated.get("message", updated.get("phase", "running")))
-                updated["message"] = f"{message} (attempt {attempt})"
-                phase_callback(updated)
-
-            with _state.lock:
-                run.hours.clear()
-                run.failed_hours.clear()
-                run.n1_failed_hours.clear()
-                run.completed_hours = 0
-                run.phase = "agent_retry" if attempt > 1 else "running"
-                run.phase_detail = f"Running AI agents, attempt {attempt}"
-
-            final_result = await _run_simulation_async(
-                dataset_root=DATASET_ROOT,
-                start_hour=run.start_hour,
-                end_hour=run.end_hour,
-                stop_on_failure=stop_on_failure,
-                verbose=False,
-                model_overrides={"all": model} if model else None,
-                allow_fallback_physics=allow_fallback_physics,
-                full_n1_scan=full_n1_scan,
-                progress_callback=attempt_progress_callback,
-                phase_callback=attempt_phase_callback,
-            )
-            final_hour_results = attempt_hour_results
-            if not final_result.get("failed_hours"):
+        
+        # First attempt: run all hours
+        attempt_hour_results: list[dict[str, Any]] = []
+        def attempt_progress_callback(hour_result: dict[str, Any]) -> None:
+            attempt_hour_results.append(hour_result)
+            progress_callback(hour_result)
+        def attempt_phase_callback(event: dict[str, Any]) -> None:
+            updated = dict(event)
+            message = str(updated.get("message", updated.get("phase", "running")))
+            updated["message"] = f"{message} (attempt 1)"
+            phase_callback(updated)
+        with _state.lock:
+            run.phase = "running"
+            run.phase_detail = "Running AI agents, attempt 1"
+        final_result = await _run_simulation_async(
+            dataset_root=DATASET_ROOT,
+            start_hour=run.start_hour,
+            end_hour=run.end_hour,
+            stop_on_failure=stop_on_failure,
+            verbose=False,
+            model_overrides={"all": model} if model else None,
+            allow_fallback_physics=allow_fallback_physics,
+            full_n1_scan=full_n1_scan,
+            progress_callback=attempt_progress_callback,
+            phase_callback=attempt_phase_callback,
+        )
+        final_hour_results = attempt_hour_results
+        
+        # Retry loop: only retry failed hours individually
+        failed_hours = list(final_result.get("failed_hours", [])) if final_result else []
+        for attempt in range(2, _API_AGENT_ATTEMPTS + 1):
+            if not failed_hours:
                 break
-            if attempt < _API_AGENT_ATTEMPTS:
+            remaining_failed: list[int] = []
+            for failed_hour in failed_hours:
                 with _state.lock:
                     run.phase = "agent_retry"
-                    run.phase_detail = f"Retrying rejected AI output, attempt {attempt + 1}"
+                    run.phase_detail = f"Retrying hour {failed_hour}, attempt {attempt}"
+                attempt_hour_results = []
+                retry_result = await _run_simulation_async(
+                    dataset_root=DATASET_ROOT,
+                    start_hour=failed_hour,
+                    end_hour=failed_hour + 1,
+                    stop_on_failure=False,
+                    verbose=False,
+                    model_overrides={"all": model} if model else None,
+                    allow_fallback_physics=allow_fallback_physics,
+                    full_n1_scan=full_n1_scan,
+                    progress_callback=attempt_progress_callback,
+                    phase_callback=attempt_phase_callback,
+                )
+                if retry_result and retry_result.get("failed_hours"):
+                    remaining_failed.append(failed_hour)
+            failed_hours = remaining_failed
+            if remaining_failed and attempt < _API_AGENT_ATTEMPTS:
+                with _state.lock:
+                    run.phase = "agent_retry"
+                    run.phase_detail = f"Retrying {len(remaining_failed)} failed hours, attempt {attempt + 1}"
         
         successful = len([h for h in run.hours if not h.step_failed])
         attempted = run.completed_hours or 1
@@ -503,6 +549,7 @@ def get_simulation_hours() -> list[dict[str, Any]]:
                 "n1_failed": h.n1_failed,
                 "step_failed": h.step_failed,
                 "evaluation_results": h.evaluation_results,
+                "retried": h.retried,
             }
             for h in sim.hours
         ]

@@ -173,5 +173,6 @@ export interface SimulationHourResult {
   } | null
   n1_failed: boolean
   step_failed: boolean
+  retried?: boolean
   evaluation_results?: EvaluationResult[]
 }

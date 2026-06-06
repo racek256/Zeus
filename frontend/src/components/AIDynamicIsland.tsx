@@ -373,7 +373,9 @@ export function AIDynamicIsland() {
                             ? 'bg-primary text-on-primary'
                             : h.step_failed
                               ? 'bg-[#FFE8E8] text-[#8A1C1C] hover:bg-[#FFD0D0]'
-                              : 'bg-surface-low text-on-surface-variant hover:bg-surface-high'
+                              : h.retried
+                                ? 'bg-[#FFF8E0] text-[#8A6B00] hover:bg-[#FFECB3]'
+                                : 'bg-surface-low text-on-surface-variant hover:bg-surface-high'
                         }`}
                       >
                         {h.hour_index}
