@@ -351,9 +351,7 @@ export function AIDynamicIsland() {
                       <p className="text-[11px] text-on-surface-variant">Processing hour {simStatus.current_hour}...</p>
                     </div>
                   )}
-                  {simStatus.failed_hours.length > 0 && (
-                    <p className="mt-1.5 text-[11px] font-medium text-[#8A1C1C]">{simStatus.failed_hours.length} failed hours: {simStatus.failed_hours.slice(0, 5).join(', ')}{simStatus.failed_hours.length > 5 ? '...' : ''}</p>
-                  )}
+
                 </div>
               )}
 
