@@ -251,7 +251,7 @@ export function AIDynamicIsland() {
 
   return (
     <div className="absolute bottom-6 left-1/2 z-20 -translate-x-1/2">
-      <div className={`overflow-hidden rounded-[1.35rem] bg-surface-lowest/95 text-on-background shadow-[0_24px_56px_rgba(28,27,27,0.16)] backdrop-blur-[20px] transition-all duration-300 ease-out ${expanded ? 'w-[460px]' : 'w-[430px]'}`}>
+      <div className={`overflow-hidden rounded-[1.35rem] bg-surface-lowest/95 text-on-background shadow-[0_24px_56px_rgba(28,27,27,0.16)] backdrop-blur-[20px] transition-all duration-300 ease-out ${expanded ? 'w-[460px] max-h-[80vh]' : 'w-[430px]'}`}>
         <button type="button" onClick={() => setExpanded((v) => !v)} className="flex w-full items-center gap-3 bg-surface-low px-4 py-3 text-left transition hover:bg-surface-high focus:outline-none focus:ring-2 focus:ring-primary/20">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-primary text-on-primary">
             {phase === 'running' ? <Loader2 size={18} strokeWidth={1.9} className="animate-spin" /> : <Sparkles size={18} strokeWidth={1.9} />}
@@ -286,7 +286,7 @@ export function AIDynamicIsland() {
 
         {expanded && (
           <div className="bg-surface-low px-4 pb-4">
-            <div className="space-y-3">
+            <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
               <div className="flex gap-2">
                 {phase !== 'running' ? (
                   <button onClick={status?.initialised ? handleStartSim : handleInit} className="flex h-9 items-center gap-2 rounded-xl bg-primary px-3 text-xs font-bold text-on-primary transition hover:bg-primary-container focus:outline-none focus:ring-2 focus:ring-primary/20">
