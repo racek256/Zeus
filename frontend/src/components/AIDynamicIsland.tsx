@@ -130,6 +130,7 @@ export function AIDynamicIsland() {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const didMountCheck = useRef(false)
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -219,6 +220,33 @@ export function AIDynamicIsland() {
     setPhase('idle')
   }, [stopPolling])
 
+  useEffect(() => {
+    // If the user reloads the page while a simulation is running,
+    // immediately resume tracking so the progress bar never disappears.
+    if (didMountCheck.current) return
+    didMountCheck.current = true
+
+    async function resumeIfRunning() {
+      try {
+        const copilot = await getCopilotStatus()
+        if (copilot.simulation_running) {
+          setPhase('running')
+          const [s, h] = await Promise.all([getSimulationStatus(), getSimulationHours()])
+          setSimStatus(s)
+          setHours(h)
+          setStatus(copilot)
+          pollSimulation()
+        } else {
+          setStatus(copilot)
+        }
+      } catch {
+        // backend may not be ready yet, ignore
+      }
+    }
+
+    resumeIfRunning()
+  }, [pollSimulation])
+
   useEffect(() => () => stopPolling(), [stopPolling])
 
   return (
@@ -280,12 +308,18 @@ export function AIDynamicIsland() {
                     <p className="text-[11px] font-bold text-on-background">{Math.round(progress)}%</p>
                   </div>
                   <div className="h-3 overflow-hidden rounded-full bg-surface-high">
+
                     <div className="h-full rounded-full bg-primary transition-all duration-500" style={{ width: `${progress}%` }} />
                   </div>
+
                   <div className="mt-2 flex justify-between text-[10px] text-on-surface-variant">
                     <span>{simStatus.completed_hours} completed</span>
                     <span>{simStatus.total_hours - simStatus.completed_hours} remaining</span>
                   </div>
+                  <p className="mt-2 text-[10px] italic text-on-surface-variant/60">
+                    *simulation is performed by ultra lightweight open-source model
+                  </p>
+
                   <div className="mt-2 flex items-center gap-2">
                     <Loader2 size={12} className="animate-spin text-primary" />
                     <p className="text-[11px] text-on-surface-variant">
