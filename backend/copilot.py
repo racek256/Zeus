@@ -367,6 +367,7 @@ async def _run_sim_async(
                     if hour_result["hour_index"] in run.failed_hours:
                         run.failed_hours.remove(hour_result["hour_index"])
                 
+                n1_passed = hour_result.get("n1_passed")
                 if n1_passed is False:
                     if hour_result["hour_index"] not in run.n1_failed_hours:
                         run.n1_failed_hours.append(hour_result["hour_index"])

@@ -318,7 +318,7 @@ export function AIDynamicIsland() {
                     <span>{simStatus.total_hours - simStatus.completed_hours} remaining</span>
                   </div>
                   <p className="mt-2 text-[10px] italic text-on-surface-variant/60">
-                    *simulation is performed by ultra lightweight open-source model
+                    *simulation is powered by an ultra cheap and stupid model
                   </p>
 
                   <div className="mt-2 flex items-center gap-2">
@@ -352,7 +352,7 @@ export function AIDynamicIsland() {
                     </div>
                   )}
                   {simStatus.failed_hours.length > 0 && (
-                    <p className="mt-1.5 text-[11px] font-medium text-[#8A1C1C]">{simStatus.failed_hours.length} operational failures: {simStatus.failed_hours.slice(0, 5).join(', ')}{simStatus.failed_hours.length > 5 ? '...' : ''}</p>
+                    <p className="mt-1.5 text-[11px] font-medium text-[#8A1C1C]">{simStatus.failed_hours.length} failed hours: {simStatus.failed_hours.slice(0, 5).join(', ')}{simStatus.failed_hours.length > 5 ? '...' : ''}</p>
                   )}
                 </div>
               )}
@@ -413,7 +413,7 @@ export function AIDynamicIsland() {
 
                   {display.step_failed && firstRejectionReason(display) && (
                     <div className="mb-2 rounded-xl bg-[#FFE8E8] px-3 py-2">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8A1C1C]">Rejected prediction</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8A1C1C]">Rejected system change</p>
                       <p className="mt-1 text-[11px] font-medium text-[#8A1C1C]">{firstRejectionReason(display)}</p>
                     </div>
                   )}

@@ -12,12 +12,7 @@ export function Navbar() {
       </div>
 
       {/* Right side - placeholder */}
-      <div className="flex items-center gap-4">
-        
-        <div className="w-8 h-8 rounded-full bg-surface-high flex items-center justify-center">
-          <span className="text-xs font-medium text-on-background">R</span>
-        </div>
-      </div>
+      <div className="flex items-center gap-4" />
     </header>
   )
 }
