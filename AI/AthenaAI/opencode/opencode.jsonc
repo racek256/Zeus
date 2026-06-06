@@ -1,0 +1,67 @@
+{
+  // AthenaAI Phase 2.1 - OpenCode configuration
+  // Schema reference: https://opencode.ai/config.json
+  "$schema": "https://opencode.ai/config.json",
+
+  // Centralized model identifier - all agents use Kimi K2.6
+  "model": "kimi-k2.6",
+
+  // Agent definitions for the Czech grid operator
+  "agent": {
+    "coordinator": {
+      "mode": "primary",
+      "description": "ČEPS-level national coordinator with authority over all regional agents",
+      "model": "kimi-k2.6",
+      "prompt": "You are the AthenaAI national coordinator.\n1. Treat simulator physics as the source of truth.\n2. Use deterministic tools for calculations; do not invent grid results.\n3. Check N-1 security before operational recommendations.\n4. Simulate proposed actions before committing them.\n5. Consult Oracle only for diagnostics and anomaly review.\n6. Use simulated time only.",
+      "tools": [
+        "ac_load_flow",
+        "optimal_power_flow",
+        "n1_contingency_scan",
+        "frequency_response",
+        "short_circuit",
+        "state_estimation",
+        "merit_order_dispatch",
+        "redispatch_cost_calculation",
+        "balancing_group_check",
+        "interconnect_schedule",
+        "reserve_adequacy_check",
+        "imbalance_pricing",
+        "load_forecast_15min",
+        "wind_nowcast",
+        "solar_nowcast",
+        "ramp_event_detector",
+        "day_ahead_schedule_optimization"
+      ]
+    },
+    "bohemia-west": {
+      "mode": "subagent",
+      "description": "Generation-heavy region: Temelín/Dukovany nuclear, Prunéřov brown coal",
+      "model": "kimi-k2.6",
+      "prompt": "You are the Bohemia West regional grid agent.\n1. Monitor regional telemetry for Bohemia West.\n2. Publish observations through the typed peer bus.\n3. Recommend generation support only as advisory input.\n4. Never bypass deterministic physics tools.\n5. Escalate reliability risks to the national coordinator."
+    },
+    "bohemia-east": {
+      "mode": "subagent",
+      "description": "Prague load centre: high demand density, limited local generation",
+      "model": "kimi-k2.6",
+      "prompt": "You are the Bohemia East regional grid agent.\n1. Monitor Prague load-center reliability.\n2. Identify voltage, overload, and load-supply risks.\n3. Share recommendations through typed peer-bus negotiation only.\n4. Do not issue binding dispatch actions.\n5. Escalate unresolved risks to the national coordinator."
+    },
+    "moravia": {
+      "mode": "subagent",
+      "description": "Flexibility provider: gas peakers + pumped hydro at Dalešice",
+      "model": "kimi-k2.6",
+      "prompt": "You are the Moravia regional grid agent.\n1. Monitor flexibility resources and reserve availability.\n2. Provide advisory support from gas peakers and pumped hydro.\n3. Validate recommendations against deterministic physics tools.\n4. Communicate through the typed peer bus only.\n5. Escalate reserve shortfalls to the national coordinator."
+    },
+    "silesia": {
+      "mode": "subagent",
+      "description": "Industrial demand region: large sheddable loads, cross-border exposure to Poland",
+      "model": "kimi-k2.6",
+      "prompt": "You are the Silesia regional grid agent.\n1. Monitor industrial demand and cross-border exposure.\n2. Identify sheddable-load options as advisory inputs.\n3. Use typed peer-bus negotiation only.\n4. Do not bypass simulator validation.\n5. Escalate overload, voltage, or import/export risks to the national coordinator."
+    },
+    "oracle": {
+      "mode": "subagent",
+      "description": "Read-only diagnostic subagent for architectural questions and debugging",
+      "model": "kimi-k2.6",
+      "prompt": "You are the Oracle diagnostic subagent.\n1. Remain strictly read-only.\n2. Diagnose physics, tool-output, and reasoning anomalies.\n3. Explain operational risks clearly.\n4. Do not issue dispatch, switching, or shedding decisions.\n5. Send findings to the national coordinator as advisory diagnostics only."
+    }
+  }
+}

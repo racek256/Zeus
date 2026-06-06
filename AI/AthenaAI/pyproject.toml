@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "athenaai"
+version = "0.2.0"
+description = "AthenaAI Phase 2.2 - Czech grid AI operator simulation stack"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.10.0",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+physics = [
+    "pandapower>=3.4,<4",
+    "numba>=0.65",
+]
+market = []
+forecast = [
+    "timesfm",
+]
+full = [
+    "pandapower>=3.4,<4",
+    "numba>=0.65",
+    "timesfm",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.setuptools.packages.find]
+include = ["athenaai*"]
+exclude = ["opencode*", "tests*"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pyright]
+exclude = [".venv", "**/__pycache__"]
