@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 const STORAGE_KEY = 'grid-settings'
 
 export const DEFAULTS = {
-  mapStyle: 'streets-v12',
+  mapStyle: 'satellite-v9',
   refreshInterval: 30,
   dataTimeout: 30,
 }
