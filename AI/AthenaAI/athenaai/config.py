@@ -24,7 +24,7 @@ load_dotenv()
 # Centralized model identifier for all agents.
 # Use this constant in agent configs to ensure consistency.
 # Provider slug is intentionally abstracted to allow easy provider switching.
-KIMI_K2_6_MODEL: Final[str] = "kimi-k2.6"
+KIMI_K2_6_MODEL: Final[str] = "deepseek-v4-flash"
 
 # OpenCode Go configuration
 # The API key is consumed from this env var by opencode Go binary.
@@ -114,7 +114,7 @@ DEFAULT_SIMULATION_STEP_MINUTES: Final[int] = 15
 DEFAULT_DAY_AHEAD_HOURS: Final[int] = 24
 
 # Dataset paths (relative to AthenaAI root)
-DATASET_ROOT: Path = ATHENAAI_ROOT.parent / "greenhack-2026-ČEPS-dataset"
+DATASET_ROOT: Path = Path("/home/racek/grid/dataset/greenhack-2026-ČEPS-dataset")
 DATASET_STATIC: Path = DATASET_ROOT / "data" / "static"
 DATASET_SNAPSHOTS: Path = DATASET_ROOT / "data" / "snapshots"
 DATASET_REALTIME: Path = DATASET_ROOT / "data" / "realtime"

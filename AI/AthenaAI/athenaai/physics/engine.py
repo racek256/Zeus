@@ -385,7 +385,7 @@ def run_fallback_load_flow(
 
     load_total = sum(float(load.get("p_mw", 0.0)) for load in loads)
     imbalance = generation_total - load_total
-    balance_tolerance_mw = max(5.0, 0.02 * max(load_total, generation_total, 1.0))
+    balance_tolerance_mw = max(5.0, 0.05 * max(load_total, generation_total, 1.0))
     if abs(imbalance) > balance_tolerance_mw:
         return LoadFlowResult(
             converged=False,

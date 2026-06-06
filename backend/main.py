@@ -327,6 +327,103 @@ def analytics_alarms():
     return compute_alarms(data)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# AI Copilot endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel
+from copilot import (
+    initialise as copilot_initialise,
+    start_simulation as copilot_start_simulation,
+    get_simulation_status as copilot_get_sim_status,
+    get_simulation_hours as copilot_get_sim_hours,
+    get_simulation_hour as copilot_get_sim_hour,
+    chat as copilot_chat,
+    get_proposals as copilot_get_proposals,
+    get_status as copilot_get_status,
+)
+
+
+class SimRequest(BaseModel):
+    start_hour: int = 0
+    end_hour: int = 24
+    stop_on_failure: bool = True
+    allow_fallback_physics: bool = False
+    full_n1_scan: bool = False
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/api/copilot/init")
+def api_copilot_init():
+    """Initialise the AthenaAI copilot (idempotent)."""
+    try:
+        return copilot_initialise()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/copilot/status")
+def api_copilot_status():
+    """Return copilot + simulation status."""
+    return copilot_get_status()
+
+
+@app.post("/api/copilot/simulate")
+def api_copilot_simulate(req: SimRequest):
+    """Start the full simulation loop in a background thread."""
+    try:
+        return copilot_start_simulation(
+            start_hour=req.start_hour,
+            end_hour=req.end_hour,
+            stop_on_failure=req.stop_on_failure,
+            allow_fallback_physics=req.allow_fallback_physics,
+            full_n1_scan=req.full_n1_scan,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+
+
+@app.get("/api/copilot/simulation")
+def api_copilot_simulation():
+    """Get current simulation run status."""
+    return copilot_get_sim_status()
+
+
+@app.get("/api/copilot/simulation/hours")
+def api_copilot_simulation_hours():
+    """Get all completed hour results from the current simulation."""
+    return copilot_get_sim_hours()
+
+
+@app.get("/api/copilot/simulation/hour/{hour_index}")
+def api_copilot_simulation_hour(hour_index: int):
+    """Get a specific hour's detailed result."""
+    result = copilot_get_sim_hour(hour_index)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Hour {hour_index} not found")
+    return result
+
+
+@app.get("/api/copilot/proposals")
+def api_copilot_proposals(status: str | None = None):
+    """List all proposals from the simulation."""
+    return copilot_get_proposals(status)
+
+
+@app.post("/api/copilot/chat")
+def api_copilot_chat(req: ChatRequest):
+    """Ask the copilot a question about the simulation."""
+    try:
+        return copilot_chat(req.message)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

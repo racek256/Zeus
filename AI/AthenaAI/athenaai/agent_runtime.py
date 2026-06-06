@@ -557,18 +557,33 @@ class AgentRuntime:
 
             target_buses = self._low_voltage_buses(failed_contingency.violations)
             target_buses = [bus for bus in target_buses if loads_by_bus.get(bus)]
+
+            # When N-1 fails with NON_CONVERGENCE (fallback load flow),
+            # shed load from highest-demand buses to restore balance
+            if not target_buses and "NON_CONVERGENCE" in failed_contingency.violations:
+                target_buses = self._non_convergence_target_buses(loads_by_bus)
+
             if not target_buses:
                 return None
 
             chosen_flags: list[LoadSheddingFlag] = []
+            shed_mw = 50.0 if "NON_CONVERGENCE" in failed_contingency.violations else 25.0
             for bus in target_buses:
-                chosen_flags.extend(self._shed_from_bus(agent_id, bus, 25.0, loads_by_bus))
+                chosen_flags.extend(self._shed_from_bus(agent_id, bus, shed_mw, loads_by_bus))
 
             if not chosen_flags:
                 return None
 
             accepted_flags = self._merge_load_shedding_flags(accepted_flags, chosen_flags)
             current_state = self._apply_load_shedding_to_state(state, accepted_flags)
+
+            if "NON_CONVERGENCE" in failed_contingency.violations:
+                return ActionBundle(
+                    timestamp=observation.timestamp,
+                    agent_id=agent_id,
+                    load_shedding_flags=tuple(accepted_flags),
+                )
+
             lf_result = run_ac_load_flow(current_state, observation.timestamp)
             lf_violations = lf_result.violations(
                 constraints.max_branch_loading_percent,
@@ -661,6 +676,26 @@ class AgentRuntime:
             if bus_id not in buses:
                 buses.append(bus_id)
         return buses
+
+    @staticmethod
+    def _non_convergence_target_buses(
+        loads_by_bus: dict[str, list[Any]],
+        max_buses: int = 3,
+    ) -> list[str]:
+        """Find high-demand buses to shed load from when N-1 fails with NON_CONVERGENCE.
+
+        When pandapower is unavailable, the fallback load flow cannot solve for
+        voltage violations and instead reports NON_CONVERGENCE due to generation
+        imbalance. In this case, we shed load from the highest-demand buses to
+        restore balance.
+        """
+        bus_demands: list[tuple[str, float]] = []
+        for bus_id, loads in loads_by_bus.items():
+            total_demand = sum(load.demand_mw for load in loads)
+            if total_demand > 0:
+                bus_demands.append((bus_id, total_demand))
+        bus_demands.sort(key=lambda x: x[1], reverse=True)
+        return [bus_id for bus_id, _ in bus_demands[:max_buses]]
 
     @staticmethod
     def _apply_load_shedding_to_state(

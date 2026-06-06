@@ -1,3 +1,6 @@
 fastapi
 uvicorn
 pandas
+openai>=1.10.0
+python-dotenv>=1.0
+pydantic>=2.0
